@@ -9,7 +9,7 @@ export const GITHUB_MODEL_EXTRACT = 'nvidia/nemotron-3-super-120b-a12b:free';
 export const GITHUB_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 // Utilizziamo l'endpoint universale di OpenRouter
-export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1';
 
 /**
  * Prompt per l'estrazione dati dai PDF.
