@@ -1,4 +1,8 @@
 export interface ExtractedField<T = string | number> {
+  // Legacy interface – kept for backward compatibility
+
+  // Legacy interface – kept for backward compatibility
+
   value: T | null;
   page: number | null;
   rawText: string | null;
@@ -54,6 +58,13 @@ export interface NarrativeData {
   accantonamenti: string;
   conclusione: string;
   esito: string;
+}
+
+export interface FieldValue {
+  value: string | number | null;
+  page: number | null;
+  rawText: string | null;
+  bbox: { x0: number; y0: number; x1: number; y1: number } | null; // coordinate bounding box in PDF units
 }
 
 export interface HighlightInfo {

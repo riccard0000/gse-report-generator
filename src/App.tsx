@@ -2,10 +2,11 @@ import React, { useState, useCallback } from 'react';
 import { FileUploader } from './components/FileUploader';
 import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
+import { DataVerification } from './components/DataVerification';
 import { ExtractedData, NarrativeData } from './types';
 import { Zap, AlertTriangle } from 'lucide-react';
 
-type AppState = 'idle' | 'extracting' | 'generating' | 'done' | 'error';
+type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
 
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
@@ -25,12 +26,9 @@ export default function App() {
     try {
       const extracted = await extractDataFromPdfs(files, setProgress);
       setExtractedData(extracted);
-      setAppState('generating');
-      const narrative = await generateNarrative(extracted, setProgress);
-      setNarrativeData(narrative);
-      setAppState('done');
+      setAppState('verifying');
     } catch (e: any) {
-      setError(e.message || 'Errore sconosciuto');
+      setError(e.message || 'Errore durante l\'estrazione');
       setAppState('error');
     }
   }, [files]);
@@ -45,6 +43,8 @@ export default function App() {
   };
 
   const isLoading = appState === 'extracting' || appState === 'generating';
+  const showUpload = appState === 'idle' || appState === 'extracting' || appState === 'error';
+  const showVerification = appState === 'verifying' || appState === 'generating';
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -72,8 +72,9 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Upload + Analyze */}
-        {appState !== 'done' && (
+        
+        {/* STEP 1: Upload + Analyze */}
+        {showUpload && (
           <div className="max-w-2xl mx-auto">
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h2 className="text-lg font-semibold text-slate-800 mb-1">Carica i documenti</h2>
@@ -103,7 +104,7 @@ export default function App() {
                 <button
                   onClick={handleAnalyze}
                   disabled={files.length === 0}
-                  className="w-full py-3 px-6 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
+                  className="w-full py-3 px-6 mt-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
                 >
                   Avvia Analisi AI
                 </button>
@@ -112,7 +113,27 @@ export default function App() {
           </div>
         )}
 
-        {/* Report */}
+        {/* STEP 2: Data Verification */}
+        {showVerification && extractedData && (
+          <DataVerification
+            files={files}
+            extractedData={extractedData}
+            onApprove={async () => {
+              try {
+                setAppState('generating');
+                setProgress('Generazione della narrativa in corso...');
+                const narrative = await generateNarrative(extractedData, setProgress);
+                setNarrativeData(narrative);
+                setAppState('done');
+              } catch (e: any) {
+                setError(e.message || 'Errore durante la generazione del report');
+                setAppState('error');
+              }
+            }}
+          />
+        )}
+
+        {/* STEP 3: Report Viewer */}
         {appState === 'done' && extractedData && narrativeData && (
           <ReportViewer
             extractedData={extractedData}
@@ -120,6 +141,7 @@ export default function App() {
             sourceFiles={files}
           />
         )}
+
       </main>
     </div>
   );

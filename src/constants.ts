@@ -1,80 +1,60 @@
-// Modello per ESTRAZIONE dati dai PDF (multimodale, supporta immagini/PDF)
+// Prompt strings for AI steps
+
 export const GITHUB_MODEL_EXTRACT = 'meta/Llama-4-Maverick-17B-128E-Instruct-FP8';
-
-// Modello per NARRATIVA (testo professionale in italiano)
 export const GITHUB_MODEL_NARRATIVE = 'DeepSeek-V3-0324';
-
-// Endpoint GitHub Models (nuovo endpoint ufficiale, azure deprecato da lug 2025)
 export const GITHUB_MODELS_ENDPOINT = 'https://models.github.ai/inference';
 
+/**
+ * Prompt used for the first AI call: extract structured data from the uploaded PDFs.
+ * The prompt must force the model to return **pure JSON** without any markdown or backticks.
+ */
 export const EXTRACTION_PROMPT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE (Gestore dei Servizi Energetici).
-Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
+Analizza i documenti PDF allegati (bilanci aziendali e documento GSE) ed estrai i dati richiesti.
 
 Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo aggiuntivo.
 
 Struttura JSON richiesta:
 {
-  "companyName": { "value": "string", "page": number, "rawText": "string" },
-  "vatNumber": { "value": "string", "page": number, "rawText": "string" },
-  "gseResidual": { "value": number, "page": number, "rawText": "string" },
-  "gseSourceFileName": "string o null",
+  "companyName": { "value": "string", "page": number, "rawText": "string", "bbox": { "x0": number, "y0": number, "x1": number, "y1": number } },
+  "vatNumber":   { "value": "string", "page": number, "rawText": "string", "bbox": null },
+  "gseResidual": { "value": number, "page": number, "rawText": "string", "bbox": null },
   "yearsData": [
     {
       "year": "YYYY",
-      "sourceFileName": "string o null",
-      "ricavi": { "value": number, "page": number, "rawText": "string" },
-      "ebitda": { "value": number, "page": number, "rawText": "string" },
-      "ebit": { "value": number, "page": number, "rawText": "string" },
-      "utileNetto": { "value": number, "page": number, "rawText": "string" },
-      "interessiPassivi": { "value": number, "page": number, "rawText": "string" },
-      "totaleAttivo": { "value": number, "page": number, "rawText": "string" },
-      "patrimonioNetto": { "value": number, "page": number, "rawText": "string" },
-      "totaleDebiti": { "value": number, "page": number, "rawText": "string" },
-      "debitiBancheBreve": { "value": number, "page": number, "rawText": "string" },
-      "debitiBancheML": { "value": number, "page": number, "rawText": "string" },
-      "disponibilitaLiquide": { "value": number, "page": number, "rawText": "string" },
-      "creditiEntro12Mesi": { "value": number, "page": number, "rawText": "string" },
-      "rimanenze": { "value": number, "page": number, "rawText": "string" },
-      "attivoCircolante": { "value": number, "page": number, "rawText": "string" },
-      "passivitaCorrenti": { "value": number, "page": number, "rawText": "string" },
-      "debitiTributari": { "value": number, "page": number, "rawText": "string" },
-      "debitiPrevidenziali": { "value": number, "page": number, "rawText": "string" },
-      "fondoRischiOneri": { "value": number, "page": number, "rawText": "string" }
+      "sourceFileName": "string",
+      "ricavi":   { "value": number, "page": number, "rawText": "string", "bbox": null },
+      "ebitda":   { "value": number, "page": number, "rawText": "string", "bbox": null },
+      "ebit":     { "value": number, "page": number, "rawText": "string", "bbox": null },
+      "utileNetto": { "value": number, "page": number, "rawText": "string", "bbox": null }
     }
   ],
   "checklist": {
-    "debitiGSE": { "presente": boolean, "dettaglio": "string", "page": number|null, "sourceFileName": "string|null" },
-    "accantonamenti": { "presente": boolean, "dettaglio": "string", "page": number|null, "sourceFileName": "string|null" },
-    "riduzioniRicavi": { "presente": boolean, "dettaglio": "string", "page": number|null, "sourceFileName": "string|null" },
-    "contenziosi": { "presente": boolean, "dettaglio": "string", "page": number|null, "sourceFileName": "string|null" }
+    "debitiGSE": { "presente": boolean, "dettaglio": "string", "page": number, "bbox": null },
+    "accantonamenti": { "presente": boolean, "dettaglio": "string", "page": number, "bbox": null },
+    "riduzioniRicavi": { "presente": boolean, "dettaglio": "string", "page": number, "bbox": null },
+    "contenziosi": { "presente": boolean, "dettaglio": "string", "page": number, "bbox": null }
   }
 }
-
-Note:
-- Tutti i valori monetari in euro come numero intero (senza simboli)
-- Se un valore non √® trovato usa null
-- Identifica automaticamente quale file √® il documento GSE e quali sono i bilanci
-- Crea un oggetto yearsData per ogni anno di bilancio trovato
 `;
 
-export const NARRATIVE_PROMPT = (extractedData: string) => `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilit√† del debito da extraprofitti (art. 15-bis D.L. 4/2022).
+/**
+ * Prompt used for the second AI call: generate the narrative report based on the JSON extracted in step 1.
+ */
+export const NARRATIVE_PROMPT = (extractedData: string) => `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilita del debito da extraprofitti (art. 15-bis D.L. 4/2022).
 
-Dati estratti dai bilanci:
+Dati estratti dai bilanci (forniti come JSON):
 ${extractedData}
 
 Redigi una relazione tecnica professionale in italiano con le seguenti sezioni:
-1. "analisiRicavi": Analisi dell'andamento dei ricavi e della redditivit√† (2-3 paragrafi)
-2. "analisiLiquidita": Analisi della posizione finanziaria e liquidit√† (2-3 paragrafi)
-3. "accantonamenti": Verifica degli accantonamenti e passivit√† potenziali (1-2 paragrafi)
-4. "conclusione": Conclusione tecnica sulla sostenibilit√† del debito GSE (1 paragrafo)
+1. "analisiRicavi": Analisi dell'andamento dei ricavi e della redditivit‡ (2-3 paragrafi)
+2. "analisiLiquidita": Analisi della posizione finanziaria e liquidit‡ (2-3 paragrafi)
+3. "accantonamenti": Verifica degli accantonamenti e passivit‡ potenziali (1-2 paragrafi)
+4. "conclusione": Conclusione tecnica sulla sostenibilit‡ del debito GSE (1 paragrafo)
 5. "esito": Stringa breve: "SOSTENIBILE" o "NON SOSTENIBILE" o "SOSTENIBILE CON RISERVA"
 
-Rispondi SOLO con un oggetto JSON valido:
-{
-  "analisiRicavi": "testo...",
-  "analisiLiquidita": "testo...",
-  "accantonamenti": "testo...",
-  "conclusione": "testo...",
-  "esito": "SOSTENIBILE"
-}
+Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backticks.
 `;
+
+// Legacy aliases per retrocompatibilit‡ con altri file
+export const PROMPT_1_ESTRAZIONE = EXTRACTION_PROMPT;
+export const PROMPT_2_NARRATIVA = NARRATIVE_PROMPT;
