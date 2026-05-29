@@ -1,26 +1,31 @@
 # GSE Report Generator
 
-Applicazione React + Vite per generare report di istruttoria GSE (Extraprofitti art. 15-bis D.L. 4/2022).
-Deploy automatico su **GitHub Pages** tramite GitHub Actions.
+Applicazione web per la generazione automatica di **istruttorie economico-finanziarie GSE** relative agli extraprofitti ex art. 15-bis D.L. 4/2022.
+
+## Funzionalità
+
+- 📄 Upload di bilanci PDF (fino a 3 anni) + documento GSE
+- 🤖 Estrazione automatica dati finanziari tramite Gemini AI
+- 📊 Calcolo KPI (EBITDA margin, ROE, Current Ratio, Debt/Equity)
+- 📝 Generazione narrativa tecnica professionale
+- ✅ Checklist documentale automatica
+- 💾 Export in formato Markdown
 
 ## Setup locale
 
 ```bash
 npm install
-cp .env.example .env.local
-# Inserisci la chiave in .env.local
+cp .env.example .env
+# Inserisci la tua VITE_GEMINI_API_KEY nel file .env
 npm run dev
 ```
 
 ## Deploy su GitHub Pages
 
-1. **Settings → Secrets → Actions** → aggiungi `VITE_GEMINI_API_KEY`
-2. **Settings → Pages → Source: GitHub Actions**
-3. Ogni push su `main` avvia il deploy automatico
+1. Vai su **Settings → Secrets → Actions** e crea il secret `VITE_GEMINI_API_KEY`
+2. Vai su **Settings → Pages → Source: GitHub Actions**
+3. Fai push su `main` — il workflow si attiva automaticamente
 
-## Stack
+## Ottenere la chiave API
 
-- React 18 + TypeScript + Tailwind CSS
-- Vite 6 + GitHub Actions CI/CD
-- Gemini 2.5 Flash (Google AI Studio API)
-- pdfjs-dist (PDF viewer con highlight)
+Visita [aistudio.google.com/apikey](https://aistudio.google.com/apikey) e crea una chiave nel progetto `gse-it-svil-doc-ai-0`.

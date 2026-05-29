@@ -1,9 +1,9 @@
-export interface ExtractedField<T> {
+export interface ExtractedField<T = string | number> {
   value: T | null;
   page: number | null;
   rawText: string | null;
-  sourceFileName?: string | null;
 }
+
 export interface FinancialYearData {
   year: string;
   sourceFileName: string | null;
@@ -26,12 +26,14 @@ export interface FinancialYearData {
   debitiPrevidenziali: ExtractedField<number>;
   fondoRischiOneri: ExtractedField<number>;
 }
+
 export interface ChecklistItem {
   presente: boolean;
   dettaglio: string;
   page: number | null;
   sourceFileName: string | null;
 }
+
 export interface ExtractedData {
   companyName: ExtractedField<string>;
   vatNumber: ExtractedField<string>;
@@ -45,6 +47,7 @@ export interface ExtractedData {
     contenziosi: ChecklistItem;
   };
 }
+
 export interface NarrativeData {
   analisiRicavi: string;
   analisiLiquidita: string;
@@ -52,6 +55,7 @@ export interface NarrativeData {
   conclusione: string;
   esito: string;
 }
+
 export interface HighlightInfo {
   text: string;
   page: number;
