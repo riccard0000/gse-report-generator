@@ -5,8 +5,8 @@
 // Utilizziamo Gemini 2.0 Flash su OpenRouter: 
 // 1. Offre una finestra di contesto enorme (per leggere bilanci complessi senza errori 413)
 // 2. È estremamente veloce e ottimizzato per l'estrazione dati
-export const GITHUB_MODEL_EXTRACT = 'google/gemini-2.0-flash-exp:free';
-export const GITHUB_MODEL_NARRATIVE = 'google/gemini-2.0-flash-exp:free';
+export const GITHUB_MODEL_EXTRACT = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+export const GITHUB_MODEL_NARRATIVE = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
 // Utilizziamo l'endpoint universale di OpenRouter
 export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1';
