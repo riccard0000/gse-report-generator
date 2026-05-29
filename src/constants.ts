@@ -8,7 +8,7 @@
 export const GITHUB_MODEL_EXTRACT = 'google/gemini-2.0-flash-exp:free';
 export const GITHUB_MODEL_NARRATIVE = 'google/gemini-2.0-flash-exp:free';
 
-// Endpoint API
+// Utilizziamo l'endpoint universale di OpenRouter
 export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 
 /**
