@@ -1,7 +1,13 @@
-export const GEMINI_MODEL = 'gemini-2.5-flash-preview-04-17';
+// Modello per ESTRAZIONE dati dai PDF (richiede vision/multimodal + lungo contesto)
+// llama-4-maverick:free → 1M ctx, supporta PDF inline, gratuito
+export const OPENROUTER_MODEL_EXTRACT = 'meta-llama/llama-4-maverick:free';
+
+// Modello per NARRATIVA (solo testo, più veloce e preciso per l'italiano)
+// deepseek-chat-v3:free → ottimo per testi professionali in italiano
+export const OPENROUTER_MODEL_NARRATIVE = 'deepseek/deepseek-chat-v3-0324:free';
 
 export const EXTRACTION_PROMPT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE (Gestore dei Servizi Energetici).
-Analizza i PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti in formato JSON.
+Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
 
 Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo aggiuntivo.
 
@@ -43,12 +49,11 @@ Struttura JSON richiesta:
   }
 }
 
-Note importanti:
-- Tutti i valori monetari devono essere in euro (numero intero, senza simboli)
-- Se un valore non è trovato, usa null
+Note:
+- Tutti i valori monetari in euro come numero intero (senza simboli)
+- Se un valore non è trovato usa null
 - Identifica automaticamente quale file è il documento GSE e quali sono i bilanci
-- Per yearsData, crea un oggetto per ogni anno di bilancio trovato
-- La pagina si riferisce alla pagina del PDF dove hai trovato il dato
+- Crea un oggetto yearsData per ogni anno di bilancio trovato
 `;
 
 export const NARRATIVE_PROMPT = (extractedData: string) => `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilità del debito da extraprofitti (art. 15-bis D.L. 4/2022).
@@ -58,7 +63,7 @@ ${extractedData}
 
 Redigi una relazione tecnica professionale in italiano con le seguenti sezioni:
 1. "analisiRicavi": Analisi dell'andamento dei ricavi e della redditività (2-3 paragrafi)
-2. "analisiLiquidita": Analisi della posizione finanziaria e liquidità (2-3 paragrafi)  
+2. "analisiLiquidita": Analisi della posizione finanziaria e liquidità (2-3 paragrafi)
 3. "accantonamenti": Verifica degli accantonamenti e passività potenziali (1-2 paragrafi)
 4. "conclusione": Conclusione tecnica sulla sostenibilità del debito GSE (1 paragrafo)
 5. "esito": Stringa breve: "SOSTENIBILE" o "NON SOSTENIBILE" o "SOSTENIBILE CON RISERVA"
