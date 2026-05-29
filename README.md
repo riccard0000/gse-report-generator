@@ -1,47 +1,48 @@
 # GSE Report Generator
 
-Applicazione web per la generazione automatica di **istruttorie economico-finanziarie GSE** relative agli extraprofitti ex art. 15-bis D.L. 4/2022.
+**Istruttoria Economico-Finanziaria GSE** — Extraprofitti art. 15-bis D.L. 4/2022
 
-## Funzionalità
+App React + Vite + TypeScript che analizza bilanci aziendali tramite AI e genera una relazione tecnica per la verifica della sostenibilità del debito GSE da extraprofitti.
 
-- 📄 Upload di bilanci PDF (fino a 3 anni) + documento GSE
-- 🤖 Estrazione automatica dati finanziari tramite AI (OpenRouter — **gratuito**)
-- 📊 Calcolo KPI (EBITDA margin, ROE, Current Ratio, Debt/Equity)
-- 📝 Generazione narrativa tecnica professionale in italiano
-- ✅ Checklist documentale automatica
-- 💾 Export in formato Markdown
+## Stack
 
-## Modelli AI utilizzati
+- **Frontend**: React 18 + Vite + TypeScript + Tailwind CSS
+- **AI**: [GitHub Models](https://github.com/marketplace?type=models) — inferenza gratuita, zero infrastruttura
+  - Estrazione PDF: `meta/llama-4-maverick` (1M ctx, multimodale)
+  - Narrativa: `deepseek/deepseek-v3-0324` (testo professionale)
+- **Hosting**: GitHub Pages (deploy automatico via GitHub Actions)
 
-| Fase | Modello | Note |
-|------|---------|------|
-| Estrazione PDF | `meta-llama/llama-4-maverick:free` | 1M ctx, supporta PDF multimodal |
-| Narrativa | `deepseek/deepseek-chat-v3-0324:free` | Ottimo per italiano tecnico |
+## Configurazione locale
 
-Entrambi i modelli sono **gratuiti** su [OpenRouter](https://openrouter.ai) (limite: 200 req/giorno).
-
-## Setup locale
-
-```bash
-npm install
-cp .env.example .env
-# Inserisci la tua VITE_OPENROUTER_API_KEY nel file .env
-# Chiave gratuita da: https://openrouter.ai/settings/keys
-npm run dev
-```
+1. Clona il repository
+2. Crea un [GitHub Personal Access Token](https://github.com/settings/tokens) (nessun permesso specifico richiesto)
+3. Copia `.env.example` in `.env` e inserisci il token:
+   ```
+   VITE_GITHUB_TOKEN=ghp_il_tuo_token
+   ```
+4. Installa e avvia:
+   ```bash
+   npm install
+   npm run dev
+   ```
 
 ## Deploy su GitHub Pages
 
-1. Vai su [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) → crea una chiave API gratuita
-2. Nel repo GitHub: **Settings → Secrets → Actions** → crea `VITE_OPENROUTER_API_KEY`
-3. **Settings → Pages → Source: GitHub Actions**
-4. Fai push su `main` — il workflow si attiva automaticamente
+Il deploy è automatico ad ogni push su `main` tramite GitHub Actions.
 
-L'app sarà disponibile su: `https://riccard0000.github.io/gse-report-generator/`
+Prerequisito: impostare il secret `VITE_GITHUB_TOKEN` nel repository:
+- **Settings → Secrets and variables → Actions → New repository secret**
+- Nome: `VITE_GITHUB_TOKEN`
+- Valore: il tuo GitHub Personal Access Token
 
-## Limiti free tier OpenRouter
+Abilitare GitHub Pages:
+- **Settings → Pages → Source: GitHub Actions**
 
-- 20 richieste/minuto
-- 200 richieste/giorno (reset giornaliero)
-- Nessuna carta di credito richiesta
-- Per uso intensivo: aggiungere crediti su openrouter.ai
+## Rate limits GitHub Models (piano gratuito)
+
+| Modello | Req/min | Req/giorno |
+|---|---|---|
+| Llama 4 Maverick | 10 | 50 |
+| DeepSeek V3 | 10 | 50 |
+
+Sufficiente per uso come dimostratore interno.

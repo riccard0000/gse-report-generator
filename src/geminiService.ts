@@ -1,12 +1,12 @@
 import { ExtractedData, NarrativeData } from './types';
-import { OPENROUTER_MODEL_EXTRACT, OPENROUTER_MODEL_NARRATIVE, EXTRACTION_PROMPT, NARRATIVE_PROMPT } from './constants';
+import { GITHUB_MODEL_EXTRACT, GITHUB_MODEL_NARRATIVE, GITHUB_MODELS_ENDPOINT, EXTRACTION_PROMPT, NARRATIVE_PROMPT } from './constants';
 
 const getApiKey = (): string => {
-  const key = import.meta.env.VITE_OPENROUTER_API_KEY;
+  const key = import.meta.env.VITE_GITHUB_TOKEN;
   if (!key) {
     throw new Error(
-      'VITE_OPENROUTER_API_KEY non configurata. ' +
-      'Aggiungi la variabile d\'ambiente oppure inserisci la chiave nelle impostazioni.'
+      'VITE_GITHUB_TOKEN non configurata. ' +
+      'Aggiungi il tuo GitHub Personal Access Token nelle impostazioni o nel file .env'
     );
   }
   return key;
@@ -21,22 +21,21 @@ const fileToBase64 = (file: File): Promise<string> =>
   });
 
 /**
- * Chiama OpenRouter con l'API OpenAI-compatibile.
- * Usa meta-llama/llama-4-maverick:free per l'estrazione (supporta PDF/vision, 1M ctx)
- * e deepseek/deepseek-chat-v3-0324:free per la narrativa (testo puro, veloce).
+ * Chiama GitHub Models API (endpoint compatibile OpenAI).
+ * Usa meta/llama-4-maverick per l'estrazione (supporta PDF/vision, 1M ctx)
+ * e deepseek/deepseek-v3-0324 per la narrativa (testo puro, veloce).
+ * Documentazione: https://docs.github.com/github-models
  */
-const callOpenRouter = async (
+const callGitHubModels = async (
   model: string,
   messages: object[],
   apiKey: string
 ): Promise<string> => {
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const response = await fetch(`${GITHUB_MODELS_ENDPOINT}/chat/completions`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://riccard0000.github.io/gse-report-generator/',
-      'X-Title': 'GSE Report Generator',
     },
     body: JSON.stringify({
       model,
@@ -48,7 +47,11 @@ const callOpenRouter = async (
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`OpenRouter error ${response.status}: ${errText}`);
+    // Rate limit specifico GitHub Models
+    if (response.status === 429) {
+      throw new Error('Rate limit GitHub Models raggiunto. Attendi qualche minuto e riprova.');
+    }
+    throw new Error(`GitHub Models error ${response.status}: ${errText}`);
   }
 
   const data = await response.json();
@@ -75,7 +78,7 @@ export const extractDataFromPdfs = async (
       type: 'text',
       text: `\n--- Documento: ${file.name} ---`,
     });
-    // OpenRouter/Llama4 supporta PDF inline come image_url con mime type
+    // GitHub Models / Llama4 supporta PDF inline come image_url con mime type
     contentParts.push({
       type: 'image_url',
       image_url: {
@@ -86,8 +89,8 @@ export const extractDataFromPdfs = async (
 
   onProgress?.('Analisi AI in corso (30-90 secondi per documenti grandi)...');
 
-  const text = await callOpenRouter(
-    OPENROUTER_MODEL_EXTRACT,
+  const text = await callGitHubModels(
+    GITHUB_MODEL_EXTRACT,
     [{ role: 'user', content: contentParts }],
     apiKey
   );
@@ -111,8 +114,8 @@ export const generateNarrative = async (
 
   const prompt = NARRATIVE_PROMPT(JSON.stringify(data, null, 2));
 
-  const text = await callOpenRouter(
-    OPENROUTER_MODEL_NARRATIVE,
+  const text = await callGitHubModels(
+    GITHUB_MODEL_NARRATIVE,
     [{ role: 'user', content: prompt }],
     apiKey
   );
