@@ -1,13 +1,11 @@
-// Modello per ESTRAZIONE dati dai PDF (richiede vision/multimodal + lungo contesto)
-// meta/llama-4-maverick → 1M ctx, supporta PDF inline — disponibile su GitHub Models
-export const GITHUB_MODEL_EXTRACT = 'meta/llama-4-maverick';
+// Modello per ESTRAZIONE dati dai PDF (multimodale, supporta immagini/PDF)
+export const GITHUB_MODEL_EXTRACT = 'meta/Llama-4-Maverick-17B-128E-Instruct-FP8';
 
-// Modello per NARRATIVA (solo testo, più veloce e preciso per l'italiano)
-// deepseek/deepseek-v3-0324 → ottimo per testi professionali in italiano
-export const GITHUB_MODEL_NARRATIVE = 'deepseek/deepseek-v3-0324';
+// Modello per NARRATIVA (testo professionale in italiano)
+export const GITHUB_MODEL_NARRATIVE = 'DeepSeek-V3-0324';
 
-// Endpoint GitHub Models (compatibile OpenAI)
-export const GITHUB_MODELS_ENDPOINT = 'https://models.inference.ai.azure.com';
+// Endpoint GitHub Models (nuovo endpoint ufficiale, azure deprecato da lug 2025)
+export const GITHUB_MODELS_ENDPOINT = 'https://models.github.ai/inference';
 
 export const EXTRACTION_PROMPT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE (Gestore dei Servizi Energetici).
 Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
