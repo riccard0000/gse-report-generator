@@ -1,5 +1,9 @@
+import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, NarrativeData } from './types';
 import { GITHUB_MODEL_EXTRACT, GITHUB_MODEL_NARRATIVE, GITHUB_MODELS_ENDPOINT, EXTRACTION_PROMPT, NARRATIVE_PROMPT } from './constants';
+
+// Configura worker PDF.js tramite CDN (evita problemi di bundling)
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 const getApiKey = (): string => {
   const key = import.meta.env.VITE_GITHUB_TOKEN;
@@ -12,19 +16,28 @@ const getApiKey = (): string => {
   return key;
 };
 
-const fileToBase64 = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve((reader.result as string).split(',')[1]);
-    reader.onerror = reject;
-  });
+/**
+ * Estrae tutto il testo da un PDF usando PDF.js (lato browser, no server).
+ */
+const extractTextFromPdf = async (file: File): Promise<string> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages: string[] = [];
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item: any) => ('str' in item ? item.str : ''))
+      .join(' ');
+    pages.push(`[Pagina ${i}]\n${pageText}`);
+  }
+
+  return pages.join('\n\n');
+};
 
 /**
  * Chiama GitHub Models API (endpoint compatibile OpenAI).
- * Usa meta/llama-4-maverick per l'estrazione (supporta PDF/vision, 1M ctx)
- * e deepseek/deepseek-v3-0324 per la narrativa (testo puro, veloce).
- * Documentazione: https://docs.github.com/github-models
  */
 const callGitHubModels = async (
   model: string,
@@ -47,7 +60,6 @@ const callGitHubModels = async (
 
   if (!response.ok) {
     const errText = await response.text();
-    // Rate limit specifico GitHub Models
     if (response.status === 429) {
       throw new Error('Rate limit GitHub Models raggiunto. Attendi qualche minuto e riprova.');
     }
@@ -64,34 +76,23 @@ export const extractDataFromPdfs = async (
 ): Promise<ExtractedData> => {
   const apiKey = getApiKey();
 
-  onProgress?.('Preparazione dei documenti PDF...');
+  onProgress?.('Estrazione testo dai PDF...');
 
-  // Costruiamo il messaggio multimodale con i PDF come base64
-  const contentParts: object[] = [
-    { type: 'text', text: EXTRACTION_PROMPT },
-  ];
-
+  // Estrai testo da ogni PDF con PDF.js
+  const docTexts: string[] = [];
   for (const file of files) {
-    onProgress?.(`Caricamento: ${file.name}`);
-    const base64 = await fileToBase64(file);
-    contentParts.push({
-      type: 'text',
-      text: `\n--- Documento: ${file.name} ---`,
-    });
-    // GitHub Models / Llama4 supporta PDF inline come image_url con mime type
-    contentParts.push({
-      type: 'image_url',
-      image_url: {
-        url: `data:application/pdf;base64,${base64}`,
-      },
-    });
+    onProgress?.(`Lettura: ${file.name}`);
+    const text = await extractTextFromPdf(file);
+    docTexts.push(`\n=== DOCUMENTO: ${file.name} ===\n${text}`);
   }
+
+  const combinedText = docTexts.join('\n\n');
 
   onProgress?.('Analisi AI in corso (30-90 secondi per documenti grandi)...');
 
   const text = await callGitHubModels(
     GITHUB_MODEL_EXTRACT,
-    [{ role: 'user', content: contentParts }],
+    [{ role: 'user', content: `${EXTRACTION_PROMPT}\n\n${combinedText}` }],
     apiKey
   );
 
@@ -100,7 +101,7 @@ export const extractDataFromPdfs = async (
     return JSON.parse(cleaned) as ExtractedData;
   } catch (e) {
     console.error('Errore parsing JSON estrazione:', text);
-    throw new Error('La risposta AI non è un JSON valido. Riprova o scegli un modello diverso.');
+    throw new Error('La risposta AI non \u00e8 un JSON valido. Riprova.');
   }
 };
 
