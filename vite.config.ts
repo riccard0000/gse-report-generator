@@ -10,7 +10,4 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
-  define: {
-    'import.meta.env.VITE_OPENROUTER_API_KEY': JSON.stringify(process.env.VITE_OPENROUTER_API_KEY ?? ''),
-  },
 });
