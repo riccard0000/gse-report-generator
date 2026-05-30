@@ -118,11 +118,12 @@ export default function App() {
           <DataVerification
             files={files}
             extractedData={extractedData}
-            onApprove={async () => {
+            onApprove={async (finalData) => { // <--- Aggiungi 'finalData' qui
               try {
                 setAppState('generating');
                 setProgress('Generazione della narrativa in corso...');
-                const narrative = await generateNarrative(extractedData, setProgress);
+                // Passa finalData invece di extractedData originale
+                const narrative = await generateNarrative(finalData, setProgress); 
                 setNarrativeData(narrative);
                 setAppState('done');
               } catch (e: any) {

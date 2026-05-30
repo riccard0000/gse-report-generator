@@ -1,24 +1,50 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import { ExtractedData, NarrativeData } from './types';
-import { 
-  GITHUB_MODEL_EXTRACT, 
-  GITHUB_MODEL_NARRATIVE, 
-  GITHUB_MODELS_ENDPOINT, 
-  EXTRACTION_PROMPT, 
-  NARRATIVE_PROMPT 
-} from './constants';
+import { ExtractedData } from './types';
+import { GITHUB_MODEL_EXTRACT, GITHUB_MODELS_ENDPOINT, EXTRACTION_PROMPT } from './constants';
 
-// Configura worker PDF.js tramite CDN
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-const getApiKey = (): string => {
-  const key = import.meta.env.VITE_GITHUB_TOKEN;
-  if (!key) {
-    throw new Error('API Key non configurata nel file .env o nei Secrets di GitHub.');
-  }
-  return key;
+/**
+ * Estrae il testo mantenendo la struttura tabellare tramite coordinate X/Y
+ */
+const extractStructuredText = (items: any[]): string => {
+  const rows: { [key: number]: any[] } = {};
+
+  items.forEach(item => {
+    // La coordinata Y indica la riga, la X la colonna
+    // Usiamo Math.round per raggruppare elementi sulla stessa riga
+    const y = Math.round(item.transform[5]); 
+    if (!rows[y]) rows[y] = [];
+    rows[y].push(item);
+  });
+
+  // Ordiniamo le righe dall'alto verso il basso e gli elementi per X
+  return Object.keys(rows)
+    .sort((a, b) => Number(b) - Number(a)) 
+    .map(y => {
+      return rows[y]
+        .sort((a, b) => a.transform[4] - b.transform[4])
+        .map(i => i.str.trim())
+        .join('\t'); // TAB come separatore di colonna
+    })
+    .join('\n');
 };
 
+const extractTextFromPdf = async (file: File): Promise<string> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let fullText = '';
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = extractStructuredText(content.items);
+    fullText += `\n--- PAGINA ${i} ---\n${pageText}\n`;
+  }
+  return fullText;
+};
+
+// Il resto della logica rimane uguale, usa callOpenRouter già creato
 /**
  * Funzione centralizzata per le chiamate API verso OpenRouter
  */
@@ -92,6 +118,20 @@ export const extractDataFromPdfs = async (
   } catch (e) {
     throw new Error('La risposta dell\'AI non è un JSON valido.');
   }
+};
+
+const convertPageToBlob = async (page: any): Promise<string> => {
+  const scale = 1.5; // Ottimo compromesso tra leggibilità e peso
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  canvas.height = viewport.height;
+  canvas.width = viewport.width;
+
+  await page.render({ canvasContext: context, viewport }).promise;
+
+  // Comprimiamo l'immagine in JPEG
+  return canvas.toDataURL('image/jpeg', 0.7); 
 };
 
 export const generateNarrative = async (
