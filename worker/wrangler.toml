@@ -1,10 +1,21 @@
-# Configurazione Cloudflare Worker per il proxy OpenRouter
-# Documentazione: https://developers.cloudflare.com/workers/
+# =================================================================
+# QUESTO FILE È LA CONFIGURAZIONE DEL CLOUDFLARE WORKER PROXY.
+# NON è la configurazione dell'app React.
+#
+# Il Worker va deployato SEPARATAMENTE dalla dashboard Cloudflare
+# oppure eseguendo questi comandi dalla cartella /worker:
+#
+#   npm install -g wrangler
+#   wrangler login
+#   wrangler secret put OPENROUTER_API_KEY
+#   wrangler deploy
+#
+# L'app React viene deployata su GitHub Pages tramite GitHub Actions.
+# =================================================================
 
 name = "gse-proxy"
 main = "index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-01-01"
 
-# Il secret OPENROUTER_API_KEY NON va qui.
-# Va aggiunto con: wrangler secret put OPENROUTER_API_KEY
-# Non committare mai chiavi API nel codice!
+[placement]
+mode = "smart"

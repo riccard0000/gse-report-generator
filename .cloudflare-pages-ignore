@@ -1,0 +1,3 @@
+# Questo file segnala a Cloudflare Pages di ignorare questo repository.
+# Il deploy dell'app React avviene tramite GitHub Actions su GitHub Pages.
+# Il Worker proxy è in /worker/ e va deployato separatamente.
