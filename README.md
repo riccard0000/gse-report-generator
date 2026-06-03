@@ -1,48 +1,82 @@
 # GSE Report Generator
 
-**Istruttoria Economico-Finanziaria GSE** — Extraprofitti art. 15-bis D.L. 4/2022
+Applicazione web per la generazione automatica di istruttorie economico-finanziarie per il **GSE (Gestore dei Servizi Energetici)** ai sensi dell'**art. 15-bis D.L. 4/2022** (extraprofitti energetici).
 
-App React + Vite + TypeScript che analizza bilanci aziendali tramite AI e genera una relazione tecnica per la verifica della sostenibilità del debito GSE da extraprofitti.
+## Come funziona
 
-## Stack
+1. **Carica** i bilanci aziendali (PDF, fino a 3 anni) e il documento GSE con l'importo residuo
+2. **Analisi AI** estrae automaticamente tutti i dati finanziari rilevanti
+3. **Verifica** e correggi i dati estratti prima di procedere
+4. **Report** completo con narrativa tecnica e giudizio di sostenibilità del debito
 
-- **Frontend**: React 18 + Vite + TypeScript + Tailwind CSS
-- **AI**: [GitHub Models](https://github.com/marketplace?type=models) — inferenza gratuita, zero infrastruttura
-  - Estrazione PDF: `meta/llama-4-maverick` (1M ctx, multimodale)
-  - Narrativa: `deepseek/deepseek-v3-0324` (testo professionale)
-- **Hosting**: GitHub Pages (deploy automatico via GitHub Actions)
+## Architettura di Sicurezza
 
-## Configurazione locale
+```
+Browser (GitHub Pages)
+    │  POST /  (solo dati, nessuna chiave API)
+    ▼
+Cloudflare Worker (proxy gratuito)
+    │  Aggiunge Authorization: Bearer sk-or-...
+    │  (chiave cifrata come Secret nel Worker)
+    ▼
+OpenRouter API
+```
 
-1. Clona il repository
-2. Crea un [GitHub Personal Access Token](https://github.com/settings/tokens) (nessun permesso specifico richiesto)
-3. Copia `.env.example` in `.env` e inserisci il token:
-   ```
-   VITE_GITHUB_TOKEN=ghp_il_tuo_token
-   ```
-4. Installa e avvia:
-   ```bash
-   npm install
-   npm run dev
-   ```
+La chiave API **non è mai nel codice frontend** né nei secret di build GitHub Actions.
 
-## Deploy su GitHub Pages
+## Setup Completo
 
-Il deploy è automatico ad ogni push su `main` tramite GitHub Actions.
+### 1. Deploy del Cloudflare Worker (proxy)
 
-Prerequisito: impostare il secret `VITE_GITHUB_TOKEN` nel repository:
-- **Settings → Secrets and variables → Actions → New repository secret**
-- Nome: `VITE_GITHUB_TOKEN`
-- Valore: il tuo GitHub Personal Access Token
+```bash
+# Installa Wrangler CLI
+npm install -g wrangler
 
-Abilitare GitHub Pages:
-- **Settings → Pages → Source: GitHub Actions**
+# Login a Cloudflare (account gratuito)
+wrangler login
 
-## Rate limits GitHub Models (piano gratuito)
+# Entra nella cartella worker
+cd worker
 
-| Modello | Req/min | Req/giorno |
-|---|---|---|
-| Llama 4 Maverick | 10 | 50 |
-| DeepSeek V3 | 10 | 50 |
+# Aggiungi la chiave OpenRouter come Secret cifrato
+wrangler secret put OPENROUTER_API_KEY
+# → Incolla la tua chiave OpenRouter (da https://openrouter.ai/keys)
 
-Sufficiente per uso come dimostratore interno.
+# Deploy del Worker
+wrangler deploy
+# → Annota l'URL: https://gse-proxy.TUONOME.workers.dev
+```
+
+### 2. Configura il Secret in GitHub Actions
+
+Vai su **GitHub → Settings → Secrets and variables → Actions** e aggiungi:
+
+| Nome | Valore |
+|------|--------|
+| `VITE_PROXY_URL` | `https://gse-proxy.TUONOME.workers.dev` |
+
+### 3. Sviluppo locale
+
+```bash
+# Terminale 1 — avvia il Worker in locale
+cd worker && wrangler dev
+# → Worker disponibile su http://localhost:8787
+
+# Terminale 2 — avvia il frontend
+cp .env.example .env
+# VITE_PROXY_URL=http://localhost:8787 (già precompilato in .env.example)
+npm install
+npm run dev
+```
+
+## Stack Tecnologico
+
+| Layer | Tecnologia |
+|-------|------------|
+| Frontend | React 18 + TypeScript |
+| Build | Vite |
+| Stile | Tailwind CSS |
+| PDF Parsing | pdfjs-dist |
+| AI | OpenRouter (NVIDIA Nemotron) |
+| Proxy | Cloudflare Workers (gratuito) |
+| Hosting | GitHub Pages |

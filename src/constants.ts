@@ -1,15 +1,29 @@
 /**
  * Costanti di configurazione per il GSE Report Generator
+ *
+ * ARCHITETTURA:
+ * Il frontend NON conosce la chiave API.
+ * Tutte le chiamate AI passano attraverso un Cloudflare Worker proxy
+ * che aggiunge l'header Authorization server-side.
+ *
+ * Deploy del Worker: vedere /worker/README.md
  */
 
-// Utilizziamo Gemini 2.0 Flash su OpenRouter: 
-// 1. Offre una finestra di contesto enorme (per leggere bilanci complessi senza errori 413)
-// 2. È estremamente veloce e ottimizzato per l'estrazione dati
+// Modello usato per l'estrazione dati strutturati dai PDF
 export const GITHUB_MODEL_EXTRACT = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+
+// Modello usato per la generazione della narrativa tecnica
 export const GITHUB_MODEL_NARRATIVE = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
-// Utilizziamo l'endpoint universale di OpenRouter
-export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1';
+/**
+ * Endpoint del proxy Cloudflare Worker.
+ * In sviluppo locale punta al proxy locale (wrangler dev).
+ * In produzione (GitHub Pages) punta al Worker deployato.
+ *
+ * Sostituisci con l'URL del tuo Worker dopo il deploy:
+ * es. https://gse-proxy.TUONOME.workers.dev
+ */
+export const PROXY_ENDPOINT = import.meta.env.VITE_PROXY_URL ?? 'https://gse-proxy.workers.dev';
 
 /**
  * Prompt per l'estrazione dati dai PDF.
@@ -62,7 +76,8 @@ Struttura JSON richiesta:
 /**
  * Prompt per la generazione della narrativa tecnica.
  */
-export const NARRATIVE_PROMPT = (extractedData: string) => `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilità del debito da extraprofitti (art. 15-bis D.L. 4/2022).
+export const NARRATIVE_PROMPT = (extractedData: string) =>
+  `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilità del debito da extraprofitti (art. 15-bis D.L. 4/2022).
 
 Dati estratti dai bilanci (JSON):
 ${extractedData}

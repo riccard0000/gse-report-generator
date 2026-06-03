@@ -38,7 +38,11 @@ jobs:
 
       - name: Build
         env:
-          VITE_GITHUB_TOKEN: ${{ secrets.VITE_GITHUB_TOKEN }}
+          # URL del Cloudflare Worker proxy — configura questo secret in:
+          # GitHub → Settings → Secrets and variables → Actions → New repository secret
+          # Nome: VITE_PROXY_URL
+          # Valore: https://gse-proxy.TUONOME.workers.dev
+          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
         run: npm run build
 
       - name: Setup Pages

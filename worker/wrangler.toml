@@ -1,0 +1,10 @@
+# Configurazione Cloudflare Worker per il proxy OpenRouter
+# Documentazione: https://developers.cloudflare.com/workers/
+
+name = "gse-proxy"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Il secret OPENROUTER_API_KEY NON va qui.
+# Va aggiunto con: wrangler secret put OPENROUTER_API_KEY
+# Non committare mai chiavi API nel codice!

@@ -1,22 +1,22 @@
+/**
+ * geminiService.ts
+ *
+ * Logica di estrazione PDF e chiamate AI.
+ * NON contiene né legge chiavi API — tutta l'autenticazione
+ * è delegata al Cloudflare Worker proxy (vedere /worker/).
+ */
 import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, NarrativeData } from './types';
 import {
   GITHUB_MODEL_EXTRACT,
   GITHUB_MODEL_NARRATIVE,
-  GITHUB_MODELS_ENDPOINT,
+  PROXY_ENDPOINT,
   EXTRACTION_PROMPT,
   NARRATIVE_PROMPT,
 } from './constants';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-// ─── Lettura chiave API da variabile d'ambiente Vite ───────────────────────
-const getApiKey = (): string => {
-  const key = import.meta.env.VITE_GITHUB_TOKEN as string;
-  if (!key) throw new Error('Variabile VITE_GITHUB_TOKEN non configurata.');
-  return key;
-};
 
 // ─── Parsing strutturale del PDF (mantiene struttura tabellare) ────────────
 const extractStructuredText = (items: any[]): string => {
@@ -30,16 +30,16 @@ const extractStructuredText = (items: any[]): string => {
 
   return Object.keys(rows)
     .sort((a: string, b: string) => Number(b) - Number(a))
-    .map((y: string) => {
-      return rows[Number(y)]
+    .map((y: string) =>
+      rows[Number(y)]
         .sort((a, b) => (a.transform[4] as number) - (b.transform[4] as number))
         .map((i) => (i.str as string).trim())
-        .join('\t');
-    })
+        .join('\t')
+    )
     .join('\n');
 };
 
-// ─── Estrazione testo da un singolo PDF ───────────────────────────────────
+// ─── Estrazione testo da un singolo file PDF ───────────────────────────────
 const extractTextFromPdf = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -54,21 +54,14 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   return fullText;
 };
 
-// ─── Chiamata centralizzata all'API OpenRouter ────────────────────────────
-const callOpenRouter = async (
+// ─── Chiamata al proxy Cloudflare Worker (nessuna chiave nel browser) ───────
+const callProxy = async (
   model: string,
   messages: object[]
 ): Promise<string> => {
-  const apiKey = getApiKey();
-
-  const response = await fetch(`${GITHUB_MODELS_ENDPOINT}/chat/completions`, {
+  const response = await fetch(PROXY_ENDPOINT, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'GSE Report Generator',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
       messages,
@@ -78,19 +71,19 @@ const callOpenRouter = async (
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
+    const errorData = await response.json().catch(() => ({})) as any;
     throw new Error(
-      `Errore OpenRouter ${response.status}: ${
-        (errorData as any).error?.message ?? 'Errore nella richiesta'
+      `Errore proxy ${response.status}: ${
+        errorData?.error?.message ?? 'Errore nella richiesta'
       }`
     );
   }
 
-  const data = await response.json();
-  return (data as any).choices?.[0]?.message?.content ?? '';
+  const data = await response.json() as any;
+  return data?.choices?.[0]?.message?.content ?? '';
 };
 
-// ─── Export: Estrazione dati dai PDF ─────────────────────────────────────
+// ─── Export: Estrazione dati strutturati dai PDF ──────────────────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
@@ -105,7 +98,7 @@ export const extractDataFromPdfs = async (
   }
 
   onProgress?.('Analisi AI in corso...');
-  const text = await callOpenRouter(GITHUB_MODEL_EXTRACT, [
+  const text = await callProxy(GITHUB_MODEL_EXTRACT, [
     { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON.' },
     { role: 'user', content: `${EXTRACTION_PROMPT}\n\n${docTexts.join('\n\n')}` },
   ]);
@@ -114,7 +107,7 @@ export const extractDataFromPdfs = async (
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     return JSON.parse(cleaned) as ExtractedData;
   } catch {
-    throw new Error("La risposta dell'AI non è un JSON valido.");
+    throw new Error("La risposta dell'AI non è un JSON valido. Riprova.");
   }
 };
 
@@ -125,7 +118,7 @@ export const generateNarrative = async (
 ): Promise<NarrativeData> => {
   onProgress?.('Generazione narrativa tecnica...');
 
-  const text = await callOpenRouter(GITHUB_MODEL_NARRATIVE, [
+  const text = await callProxy(GITHUB_MODEL_NARRATIVE, [
     { role: 'user', content: NARRATIVE_PROMPT(JSON.stringify(data, null, 2)) },
   ]);
 
@@ -133,6 +126,6 @@ export const generateNarrative = async (
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     return JSON.parse(cleaned) as NarrativeData;
   } catch {
-    throw new Error('Errore nella generazione della narrativa.');
+    throw new Error('Errore nella generazione della narrativa. Riprova.');
   }
 };
