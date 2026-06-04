@@ -3,14 +3,14 @@
  */
 
 // ─── Modelli OpenRouter (tutti :free) ─────────────────────────────────────
-// Estrazione KPI: Gemma 4 31B — quality score 65, context 262K, JSON tools
-export const OPENROUTER_MODEL_EXTRACT = 'google/gemma-4-31b-it:free';
+// Estrazione KPI: Nemotron Super 120B — 1M context, eccellente su tabelle IT
+export const OPENROUTER_MODEL_EXTRACT = 'nvidia/nemotron-3-super-120b-a12b:free';
 
-// Narrativa tecnica: Nemotron Super 120B — 1M context, testo italiano fluido
+// Narrativa tecnica: Nemotron Super 120B — stesso modello, ottimo per testo italiano
 export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 // Fallback automatico se il modello primario è sovraccarico o non disponibile
-export const OPENROUTER_MODEL_FALLBACK = 'openai/gpt-oss-120b:free';
+export const OPENROUTER_MODEL_FALLBACK = 'google/gemma-4-31b-it:free';
 
 // Endpoint OpenRouter — la chiave API è gestita SOLO dal Cloudflare Worker
 // Il frontend chiama VITE_PROXY_URL, mai OpenRouter direttamente

@@ -74,21 +74,18 @@ type MatchResult =
 // ---------------------------------------------------------------------------
 // Determina se un rawText con "+" è formula calcolata (segmenti con cifre)
 // o somma di righe bilancio (segmenti senza cifre).
-// Es. formula:   "EBIT 160.638 + ammortamenti 145.786"
-//     multi-sum: "Erario c/IRES + IRAP + ritenute"
 // ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
   const withDigits = segments.filter(s => /\d/.test(s)).length;
   return withDigits >= Math.ceil(segments.length / 2);
 }
 
-// Nomi leggibili dei segmenti (strip delle cifre per le formule)
 function segmentDisplayName(seg: string): string {
   return seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
-// Cerca un segmento testuale nella pagina, ritorna bbox + item
+// Cerca un segmento testuale nella pagina
 // ---------------------------------------------------------------------------
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
@@ -99,10 +96,8 @@ async function findSingleBboxWithItem(
 
   let found: PdfTextItem | null = null;
 
-  // Strategia 1: match esatto
   found = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg) ?? null;
 
-  // Strategia 2: keyword match (parole >= 3 char, prime 5)
   if (!found) {
     const keywords = seg
       .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
@@ -135,11 +130,6 @@ async function findSingleBboxWithItem(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Cerca il token numerico più vicino a destra dell'etichetta, stessa riga.
-// Usato SOLO per single / formula dove il valore è univoco.
-// Per multi-sum NON viene chiamato: la colonna è ambigua.
-// ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
@@ -159,7 +149,6 @@ function findNumericNeighbor(
   const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
   const candidates    = numericTokens.length > 0 ? numericTokens : sameRow;
 
-  // Match per valore esatto
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal = Math.abs(fieldValue);
     const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
@@ -173,15 +162,11 @@ function findNumericNeighbor(
     }
   }
 
-  // Fallback: più vicino a destra
   const closest = candidates.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height };
 }
 
-// ---------------------------------------------------------------------------
-// Funzione principale: trova bbox nel PDF e classifica il risultato
-// ---------------------------------------------------------------------------
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
@@ -198,7 +183,6 @@ async function findBboxByText(
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    // --- Caso 1: nessun "+" ---
     if (rawSegments.length <= 1) {
       const r = await findSingleBboxWithItem(items, rawText);
       if (!r) return null;
@@ -207,40 +191,30 @@ async function findBboxByText(
       return { kind: 'single', bboxes, segmentNames: [rawText] };
     }
 
-    // --- Caso 2: formula calcolata (segmenti contengono cifre) ---
     if (isCalculatedFormula(rawSegments)) {
-      const firstSeg = rawSegments[0];
-      const nameOnly = segmentDisplayName(firstSeg);
+      const firstSeg  = rawSegments[0];
+      const nameOnly  = segmentDisplayName(firstSeg);
       const lookupSeg = nameOnly.length >= 3 ? nameOnly : firstSeg;
       const r = await findSingleBboxWithItem(items, lookupSeg);
       if (!r) return null;
-      const numBbox = findNumericNeighbor(items, r.item, fieldValue ?? null);
-      const bboxes  = numBbox ? [r.bbox, numBbox] : [r.bbox];
-      // segmentNames: nomi leggibili di tutti i componenti della formula
+      const numBbox  = findNumericNeighbor(items, r.item, fieldValue ?? null);
+      const bboxes   = numBbox ? [r.bbox, numBbox] : [r.bbox];
       const segNames = rawSegments.map(segmentDisplayName).filter(Boolean);
       return { kind: 'formula', bboxes, segmentNames: segNames };
     }
 
-    // --- Caso 3: somma di righe (multi-sum) ---
-    // Cerca SOLO le etichette, NO i numeri affiancati (colonna sconosciuta).
-    // Il valore totale mostrato nell'input è quello estratto dall'AI ed è corretto.
     const bboxes:       BBox[]   = [];
     const segmentNames: string[] = [];
 
     for (const seg of rawSegments) {
-      // Rimuovi cifre residue dal nome voce per la ricerca
-      const cleanSeg = seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
+      const cleanSeg  = seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
       const lookupSeg = cleanSeg.length >= 3 ? cleanSeg : seg;
-
       const r = await findSingleBboxWithItem(items, lookupSeg);
       if (!r) continue;
-
-      // Evita duplicati per y (stessa riga)
       const isDup = bboxes.some(b =>
         Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2
       );
       if (isDup) continue;
-
       bboxes.push(r.bbox);
       segmentNames.push(cleanSeg || seg);
     }
@@ -313,8 +287,6 @@ const NumericInput: React.FC<NumericInputProps> = ({
 
 // ---------------------------------------------------------------------------
 // Colori highlight
-// single/formula: indice 0 per tutti i bbox (label + numero)
-// multi-sum: ogni label-bbox ha il suo colore
 // ---------------------------------------------------------------------------
 const MULTI_HIGHLIGHT_COLORS = [
   { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.90)'  },
@@ -327,7 +299,7 @@ const MULTI_HIGHLIGHT_COLORS = [
 interface ActiveHighlight {
   page:         number;
   bboxes:       BBox[];
-  segmentNames: string[];   // nomi delle voci (1 per single/formula, N per multi-sum)
+  segmentNames: string[];
   color:        string;
   isMultiSum:   boolean;
 }
@@ -336,7 +308,7 @@ const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
 function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
 
 // ---------------------------------------------------------------------------
-// PdfViewer
+// PdfViewer — fix: cancella il render in volo prima di avviarne uno nuovo
 // ---------------------------------------------------------------------------
 interface PdfViewerProps {
   file:      File;
@@ -351,6 +323,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const currentPageRef = useRef(1);
   const highlightRef   = useRef<ActiveHighlight | null>(null);
   const renderSeqRef   = useRef(0);
+  // Tiene traccia del RenderTask pdf.js in corso per poterlo cancellare
+  const renderTaskRef  = useRef<pdfjsLib.RenderTask | null>(null);
+  // Guardia rientranza: impedisce due doRender concorrenti sullo stesso canvas
+  const renderingRef   = useRef(false);
 
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
@@ -361,40 +337,68 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const page   = currentPageRef.current;
     const hl     = highlightRef.current;
     if (!pdf || !canvas) return;
-
-    const pdfPage  = await pdf.getPage(page);
     if (seq !== renderSeqRef.current) return;
 
-    const viewport = pdfPage.getViewport({ scale: 1.5 });
-    canvas.width   = viewport.width;
-    canvas.height  = viewport.height;
+    // Cancella il render precedente se ancora in volo
+    if (renderTaskRef.current) {
+      try { renderTaskRef.current.cancel(); } catch { /* ignorato */ }
+      renderTaskRef.current = null;
+    }
 
-    const ctx = canvas.getContext('2d')!;
-    await pdfPage.render({ canvasContext: ctx, viewport }).promise;
-    if (seq !== renderSeqRef.current) return;
+    // Attendi che il render precedente abbia rilasciato il canvas
+    if (renderingRef.current) return;
+    renderingRef.current = true;
 
-    if (hl && hl.page === page && hl.bboxes.length > 0) {
-      hl.bboxes.forEach((bbox, idx) => {
-        if (isBboxEmpty(bbox)) return;
-        // multi-sum: ogni bbox è una voce distinta → colore per indice
-        // single/formula: bbox[0]=label, bbox[1]=numero → stesso colore (idx 0)
-        const colorIdx = hl.isMultiSum ? idx : 0;
-        const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
-        const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
-        const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
-        ctx.save();
-        ctx.fillStyle   = colors.fill;
-        ctx.fillRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
-        ctx.strokeStyle = colors.stroke;
-        ctx.lineWidth   = 2;
-        ctx.strokeRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
-        ctx.restore();
-      });
+    try {
+      const pdfPage  = await pdf.getPage(page);
+      if (seq !== renderSeqRef.current) return;
+
+      const viewport = pdfPage.getViewport({ scale: 1.5 });
+      canvas.width   = viewport.width;
+      canvas.height  = viewport.height;
+
+      const ctx  = canvas.getContext('2d')!;
+      const task = pdfPage.render({ canvasContext: ctx, viewport });
+      renderTaskRef.current = task;
+
+      await task.promise;
+      renderTaskRef.current = null;
+      if (seq !== renderSeqRef.current) return;
+
+      if (hl && hl.page === page && hl.bboxes.length > 0) {
+        hl.bboxes.forEach((bbox, idx) => {
+          if (isBboxEmpty(bbox)) return;
+          const colorIdx = hl.isMultiSum ? idx : 0;
+          const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
+          const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
+          const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
+          ctx.save();
+          ctx.fillStyle   = colors.fill;
+          ctx.fillRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
+          ctx.strokeStyle = colors.stroke;
+          ctx.lineWidth   = 2;
+          ctx.strokeRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
+          ctx.restore();
+        });
+      }
+    } catch (e: unknown) {
+      // RenderingCancelledException è attesa: non loggare
+      const name = (e as { name?: string })?.name;
+      if (name !== 'RenderingCancelledException') {
+        console.warn('[PdfViewer] render error:', e);
+      }
+    } finally {
+      renderingRef.current = false;
     }
   }, []);
 
   const requestRender = useCallback(() => {
     const seq = ++renderSeqRef.current;
+    // Cancella task in volo prima ancora di chiamare doRender
+    if (renderTaskRef.current) {
+      try { renderTaskRef.current.cancel(); } catch { /* ignorato */ }
+      renderTaskRef.current = null;
+    }
     doRender(seq);
   }, [doRender]);
 
@@ -404,8 +408,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [requestRender]);
 
+  // Caricamento iniziale del PDF
   useEffect(() => {
     pdfDocRef.current = null;
+    renderSeqRef.current++;
+    if (renderTaskRef.current) {
+      try { renderTaskRef.current.cancel(); } catch { /* ignorato */ }
+      renderTaskRef.current = null;
+    }
+    renderingRef.current = false;
     currentPageRef.current = 1;
     setCurrentPage(1);
     setTotalPages(1);
@@ -420,21 +431,22 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       requestRender();
     })();
     return () => { cancelled = true; };
-  }, [file]);
+  }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Aggiornamento highlight
   useEffect(() => {
     highlightRef.current = highlight;
     if (highlight?.page && highlight.page !== currentPageRef.current) {
       currentPageRef.current = highlight.page;
       setCurrentPage(highlight.page);
     }
-    requestRender();
-  }, [highlight]);
+    // Non chiamare requestRender se il documento non è ancora pronto
+    if (pdfDocRef.current) requestRender();
+  }, [highlight]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const visibleBboxes   = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
-  const segmentNames    = highlight?.segmentNames ?? [];
+  const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
+  const segmentNames  = highlight?.segmentNames ?? [];
 
-  // Legenda: multi-sum → 1 riga per voce con nome; single/formula → "Evidenziato"
   const legendItems = highlight?.isMultiSum
     ? visibleBboxes.map((_, i) => ({
         colorIdx: i % MULTI_HIGHLIGHT_COLORS.length,
@@ -529,7 +541,6 @@ const HIGHLIGHT_COLORS = [
   'rgba(245,158,11,0.35)',
 ];
 
-// Ritorna il kind dal solo rawText (senza aprire il PDF)
 function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
   if (!rawText) return 'single';
   const segments = rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(Boolean);
@@ -537,7 +548,6 @@ function matchKindFromRawText(rawText: string | null | undefined): MatchResult['
   return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
 }
 
-// Nomi leggibili dei segmenti per il badge Σ (senza cifre residue)
 function segmentNamesFromRawText(rawText: string): string[] {
   return rawText
     .split(/\s*\+\s*/)
@@ -586,7 +596,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     }
 
     if (field?.page && field?.rawText && files[fileIdx]) {
-      // Navigazione immediata, highlight placeholder
       setActiveHighlight({
         page: field.page, bboxes: [EMPTY_BBOX],
         segmentNames: [], color, isMultiSum: false,
@@ -717,7 +726,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
                   const kind      = matchKindFromRawText(field?.rawText);
                   const showSigma = kind === 'multi-sum';
-                  // Nomi leggibili dei segmenti per il tooltip del badge
                   const segNames  = field?.rawText ? segmentNamesFromRawText(field.rawText) : [];
 
                   return (
@@ -725,14 +733,12 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                       <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
                         {label}
 
-                        {/* Badge pagina */}
                         {hasPage && (
                           <span className={`inline-flex items-center gap-0.5 text-[9px] font-medium ${badgeColor}`}>
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
 
-                        {/* Badge Σ con tooltip dei nomi voce */}
                         {showSigma && segNames.length > 0 && (
                           <span
                             title={`Somma di: ${segNames.join(' + ')}`}
@@ -742,7 +748,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                           </span>
                         )}
 
-                        {/* Badge f(x) per formule calcolate */}
                         {!showSigma && kind === 'formula' && (
                           <span
                             title={`Formula: ${segNames.join(' + ')}`}
@@ -752,7 +757,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                           </span>
                         )}
 
-                        {/* Badge non disponibile */}
                         {isUnavail && (
                           <span className="ml-1 text-[9px] font-semibold text-amber-500 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
                             non disponibile
