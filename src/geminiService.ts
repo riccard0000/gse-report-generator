@@ -24,13 +24,11 @@ const isPdfTextItem = (item: unknown): item is PdfTextItem =>
 // ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y) ─
 const extractStructuredText = (items: PdfTextItem[]): string => {
   const rows: Record<number, PdfTextItem[]> = {};
-
   items.forEach((item) => {
     const y = Math.round(item.transform[5]);
     if (!rows[y]) rows[y] = [];
     rows[y].push(item);
   });
-
   return Object.keys(rows)
     .sort((a, b) => Number(b) - Number(a))
     .map((y) =>
@@ -47,16 +45,17 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';
-
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const textItems = (content.items as unknown[]).filter(isPdfTextItem);
-    const pageText = extractStructuredText(textItems);
-    fullText += `\n--- PAGINA ${pageNum} ---\n${pageText}\n`;
+    fullText += `\n--- PAGINA ${pageNum} ---\n${extractStructuredText(textItems)}\n`;
   }
   return fullText;
 };
+
+// ─── Sleep helper ──────────────────────────────────────────────────
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ─── Chiamata singola al proxy Cloudflare Worker ───────────────────────────
 const callModel = async (
@@ -99,30 +98,76 @@ const callModel = async (
   return data.choices?.[0]?.message?.content ?? '';
 };
 
-// ─── Chiamata con fallback automatico ─────────────────────────────────────
-// Se il modello primario restituisce 429/503 (rate limit / overload)
-// riprova automaticamente con OPENROUTER_MODEL_FALLBACK.
+// ─── Retry con backoff esponenziale su 429/503 ──────────────────────────
+// Tentativi: 1º immediato, 2º dopo 2s, 3º dopo 4s
+const withRetry = async (
+  fn: () => Promise<string>,
+  onProgress?: (msg: string) => void,
+  maxAttempts = 3,
+  baseDelayMs = 2000
+): Promise<string> => {
+  let lastErr: Error = new Error('Unknown error');
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const is429 = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
+      if (!is429 || attempt === maxAttempts) throw lastErr;
+      const delay = baseDelayMs * attempt; // 2s, 4s, 6s
+      onProgress?.(`⏳ Rate limit — attendo ${delay / 1000}s (tentativo ${attempt}/${maxAttempts})...`);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+};
+
+// ─── Cascade completa: Gemma → Nemotron → GPT-oss ────────────────────────
+// Ogni modello viene tentato con retry prima di passare al successivo.
+const CASCADE_MODELS = [
+  OPENROUTER_MODEL_EXTRACT,   // google/gemma-4-31b-it:free
+  OPENROUTER_MODEL_NARRATIVE, // nvidia/nemotron-3-super-120b-a12b:free
+  OPENROUTER_MODEL_FALLBACK,  // openai/gpt-oss-120b:free
+];
+
 const callOpenRouter = async (
   model: string,
   messages: object[],
   onProgress?: (msg: string) => void
 ): Promise<string> => {
-  try {
-    return await callModel(model, messages, onProgress);
-  } catch (err) {
-    const isRetryable =
-      err instanceof Error &&
-      (err.message.includes('429') || err.message.includes('503') || err.message.includes('overload'));
+  // Per la chiamata narrativa usiamo direttamente il modello specificato con retry
+  const modelsToTry = model === OPENROUTER_MODEL_EXTRACT
+    ? CASCADE_MODELS
+    : [model, OPENROUTER_MODEL_FALLBACK];
 
-    if (isRetryable && model !== OPENROUTER_MODEL_FALLBACK) {
-      onProgress?.(`Modello primario non disponibile, uso fallback (${OPENROUTER_MODEL_FALLBACK.split('/').pop()})...`);
-      return await callModel(OPENROUTER_MODEL_FALLBACK, messages, onProgress);
+  let lastErr: Error = new Error('Tutti i modelli non disponibili');
+
+  for (const m of modelsToTry) {
+    try {
+      return await withRetry(
+        () => callModel(m, messages, onProgress),
+        onProgress
+      );
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const isRetryable =
+        lastErr.message.includes('429') ||
+        lastErr.message.includes('503') ||
+        lastErr.message.includes('overload');
+
+      if (isRetryable && m !== modelsToTry[modelsToTry.length - 1]) {
+        onProgress?.(`⚡ ${m.split('/').pop()} esaurito, passo a modello successivo...`);
+        // Pausa 1s tra switch di modello per non colpire subito il nuovo
+        await sleep(1000);
+        continue;
+      }
+      throw lastErr;
     }
-    throw err;
   }
+  throw lastErr;
 };
 
-// ─── Prompt per singolo PDF (restituisce yearsData con 1 anno + dati anagrafici) ─
+// ─── Prompt per singolo PDF ───────────────────────────────────────────────
 const SINGLE_PDF_PROMPT = (fileName: string) =>
   `${EXTRACTION_PROMPT}
 
@@ -132,16 +177,13 @@ Compila comunque companyName, vatNumber, gseResidual e checklist.`;
 
 // ─── Merge di più ExtractedData parziali in un unico oggetto ──────────────
 const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
-  // Prendi dati anagrafici dal primo risultato valido
   const base = results[0];
 
-  // Aggrega yearsData da tutti i risultati, ordina per anno desc
   const allYears = results
     .flatMap((r) => r.yearsData ?? [])
     .filter((y) => y && y.year)
     .sort((a, b) => Number(b.year) - Number(a.year));
 
-  // Deduplica per anno (tieni il primo occorrenza, più affidabile)
   const seenYears = new Set<string>();
   const yearsData = allYears.filter((y) => {
     if (seenYears.has(y.year)) return false;
@@ -149,7 +191,6 @@ const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
     return true;
   });
 
-  // Merge checklist: una voce è "presente" se almeno un risultato la rileva
   const mergeChecklistField = (key: keyof ExtractedData['checklist']) => {
     const found = results.find((r) => r.checklist?.[key]?.presente === true);
     return found?.checklist?.[key] ?? base.checklist?.[key];
@@ -159,22 +200,22 @@ const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
     ...base,
     yearsData,
     checklist: {
-      debitiGSE:      mergeChecklistField('debitiGSE'),
-      accantonamenti: mergeChecklistField('accantonamenti'),
+      debitiGSE:       mergeChecklistField('debitiGSE'),
+      accantonamenti:  mergeChecklistField('accantonamenti'),
       riduzioniRicavi: mergeChecklistField('riduzioniRicavi'),
-      contenziosi:    mergeChecklistField('contenziosi'),
+      contenziosi:     mergeChecklistField('contenziosi'),
     },
   };
 };
 
-// ─── Export: Estrazione dati dai PDF (3 chiamate parallele) ───────────────
+// ─── Export: Estrazione dati dai PDF (sequenziale + retry) ──────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
 ): Promise<ExtractedData> => {
   onProgress?.('Estrazione testo dai PDF...');
 
-  // 1. Estrai testo da ogni PDF in sequenza (pesante sul browser, meglio non parallelizzare)
+  // 1. Estrai testo da ogni PDF
   const docTexts: { fileName: string; text: string }[] = [];
   for (const file of files) {
     onProgress?.(`Lettura: ${file.name}`);
@@ -182,12 +223,19 @@ export const extractDataFromPdfs = async (
     docTexts.push({ fileName: file.name, text });
   }
 
-  onProgress?.(`Analisi AI — ${docTexts.length} chiamate parallele in corso...`);
+  // 2. Chiamate AI sequenziali (1 alla volta per rispettare rate limit :free)
+  const parsedResults: ExtractedData[] = [];
+  const errors: string[] = [];
 
-  // 2. Lancia una chiamata AI per ogni PDF in parallelo
-  const settled = await Promise.allSettled(
-    docTexts.map(({ fileName, text }, idx) =>
-      callOpenRouter(
+  for (let i = 0; i < docTexts.length; i++) {
+    const { fileName, text } = docTexts[i];
+    onProgress?.(`Analisi AI [${i + 1}/${docTexts.length}]: ${fileName}...`);
+
+    // Pausa di 1.5s tra una chiamata e l'altra (rate limit :free ≈ 1 req/s)
+    if (i > 0) await sleep(1500);
+
+    try {
+      const raw = await callOpenRouter(
         OPENROUTER_MODEL_EXTRACT,
         [
           {
@@ -199,40 +247,26 @@ export const extractDataFromPdfs = async (
             content: `${SINGLE_PDF_PROMPT(fileName)}\n\n=== DOCUMENTO: ${fileName} ===\n${text}`,
           },
         ],
-        (msg) => onProgress?.(`[PDF ${idx + 1}/${docTexts.length}] ${msg}`)
-      )
-    )
-  );
+        (msg) => onProgress?.(`  [PDF ${i + 1}] ${msg}`)
+      );
 
-  // 3. Raccogli i risultati riusciti, logga gli errori
-  const parsedResults: ExtractedData[] = [];
-  const errors: string[] = [];
-
-  for (let i = 0; i < settled.length; i++) {
-    const s = settled[i];
-    if (s.status === 'fulfilled') {
-      try {
-        const cleaned = s.value.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        parsedResults.push(JSON.parse(cleaned) as ExtractedData);
-      } catch {
-        errors.push(`PDF ${i + 1} (${docTexts[i].fileName}): risposta AI non è JSON valido`);
-      }
-    } else {
-      errors.push(`PDF ${i + 1} (${docTexts[i].fileName}): ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`);
+      const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      parsedResults.push(JSON.parse(cleaned) as ExtractedData);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`PDF ${i + 1} (${fileName}): ${msg}`);
+      onProgress?.(`⚠️ PDF ${i + 1} non estratto: ${msg}`);
     }
   }
 
   if (parsedResults.length === 0) {
-    throw new Error(
-      `Nessuna estrazione riuscita.\n${errors.join('\n')}`
-    );
+    throw new Error(`Nessuna estrazione riuscita.\n${errors.join('\n')}`);
   }
 
   if (errors.length > 0) {
-    onProgress?.(`⚠️ Attenzione: ${errors.length} PDF non estratti — ${errors.join('; ')}`);
+    onProgress?.(`⚠️ ${errors.length} PDF parzialmente non estratti.`);
   }
 
-  // 4. Merge dei risultati parziali
   onProgress?.('Merge dati estratti...');
   return mergeExtractedData(parsedResults);
 };
