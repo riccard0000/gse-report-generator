@@ -51,13 +51,13 @@ const kpiStyle = (key: string, val: string): string => {
 };
 
 const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
-  const company = String(data.companyName?.value ?? 'N.D.');
-  const piva    = String(data.vatNumber?.value ?? 'N.D.');
-  const residuo = data.gseResidual?.value ?? null;
-  const years   = data.yearsData;
+  const company  = String(data.companyName?.value ?? 'N.D.');
+  const piva     = String(data.vatNumber?.value ?? 'N.D.');
+  const residuo  = data.gseResidual?.value ?? null;
+  const years    = data.yearsData;
   const lastYear = years[years.length - 1];
-  const kpis    = calculateKpis(lastYear, residuo);
-  const annoKpi = lastYear?.year ?? 'N.D.';
+  const kpis     = calculateKpis(lastYear, residuo);
+  const annoKpi  = lastYear?.year ?? 'N.D.';
   const esitoStr = narrative.esito ?? 'CAUTELA';
   const generatedDate = new Date().toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
 
@@ -129,7 +129,6 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
 <title>Report GSE &ndash; ${esc(company)}</title>
 <!--[if mso]><style>table{width:100%!important;border-collapse:collapse}td,th{word-break:normal!important}</style><![endif]-->
 <style>
-/* Reset & base */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin:0; padding:0; width:100%; }
 body {
@@ -139,8 +138,6 @@ body {
   line-height: 1.55;
   background-color: #ffffff;
 }
-
-/* Header navy a larghezza piena */
 .doc-header {
   background-color: #0f3460;
   padding: 24px 32px 20px;
@@ -159,24 +156,14 @@ body {
   color: #ffffff;
   margin: 0 0 6px 0;
 }
-.doc-header-sub {
-  font-size: 9pt;
-  color: #bfdbfe;
-  margin: 0;
-}
-
-/* Meta bar */
+.doc-header-sub { font-size: 9pt; color: #bfdbfe; margin: 0; }
 .meta-bar {
   background-color: #1e3a5f;
   padding: 10px 32px;
   width: 100%;
-  /* flexbox con fallback per Word */
-  display: -webkit-box;
-  display: -ms-flexbox;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0;
 }
 .meta-cell {
   font-size: 9pt;
@@ -185,8 +172,6 @@ body {
   white-space: nowrap;
 }
 .meta-cell strong { color: #ffffff; }
-
-/* Esito badge */
 .esito-badge {
   display: inline-block;
   font-size: 9.5pt;
@@ -197,11 +182,7 @@ body {
   color: ${esitoColor(esitoStr)};
   border-radius: 3px;
 }
-
-/* Contenuto principale */
 .content { padding: 20px 32px 8px; }
-
-/* Intestazioni sezione */
 h2 {
   font-size: 11pt;
   font-weight: bold;
@@ -214,8 +195,6 @@ h2 {
 h3 { font-size: 10pt; font-weight: bold; color: #1e3a5f; margin: 12px 0 3px 0; }
 p   { font-size: 10.5pt; margin: 0 0 6px 0; color: #374151; }
 .muted { font-size: 9pt; color: #6b7280; }
-
-/* Tabelle */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -240,8 +219,6 @@ td {
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-
-/* Card narrativa */
 .narrative-box {
   background-color: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -251,8 +228,6 @@ td {
 }
 .narrative-box h3 { margin: 0 0 4px 0; color: #1e40af; font-size: 10pt; }
 .narrative-box p  { margin: 0; font-size: 10pt; color: #374151; }
-
-/* Card conclusione */
 .conclusione-box {
   background-color: ${esitoBg(esitoStr)};
   border: 1px solid ${esitoBorder(esitoStr)};
@@ -262,8 +237,6 @@ td {
 }
 .conclusione-box h3 { margin: 0 0 4px 0; color: ${esitoColor(esitoStr)}; font-size: 10pt; }
 .conclusione-box p  { margin: 0; font-size: 10pt; color: #1d2733; }
-
-/* Box commento copertura */
 .copertura-note {
   background-color: #fffbeb;
   border: 1px solid #fcd34d;
@@ -273,8 +246,6 @@ td {
   color: #78350f;
   margin-bottom: 12px;
 }
-
-/* Footer */
 .footer {
   border-top: 1px solid #e2e8f0;
   margin: 16px 32px 0;
@@ -285,15 +256,11 @@ td {
 </style>
 </head>
 <body>
-
-<!-- HEADER -->
 <div class="doc-header">
   <div class="doc-header-label">Istruttoria economico-finanziaria &middot; Extraprofitti &middot; art. 15-bis D.L. 4/2022</div>
   <h1>Report di sostenibilit&agrave; del recupero credito residuo GSE</h1>
   <p class="doc-header-sub">Valutazione della capacit&agrave; dell&apos;azienda di assorbire l&apos;esborso richiesto &mdash; analisi bilanci, KPI patrimoniali ed elementi GSE/extraprofitti</p>
 </div>
-
-<!-- META BAR -->
 <div class="meta-bar">
   <div class="meta-cell"><strong>Societ&agrave;:</strong>&nbsp;${esc(company)}</div>
   <div class="meta-cell"><strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}</div>
@@ -302,12 +269,8 @@ td {
   <div class="meta-cell"><strong>Esito:</strong>&nbsp;<span class="esito-badge">${esitoStr}</span></div>
   <div class="meta-cell" style="margin-left:auto;color:#94a3b8;font-size:8pt">Generato il ${generatedDate}</div>
 </div>
-
 <div class="content">
-
-<!-- 1. NARRATIVA -->
 <h2>1 &mdash; Nota sintetica di esito</h2>
-
 <div class="narrative-box">
   <h3>&#128200; Analisi Ricavi e Utile</h3>
   <p>${esc(narrative.analisiRicavi ?? '')}</p>
@@ -324,15 +287,10 @@ td {
   <h3>&#9654; Conclusione &mdash; Esito: ${esitoStr}</h3>
   <p>${esc(narrative.conclusione ?? '')}</p>
 </div>
-
-<!-- 2. BILANCI -->
 <h2>2 &mdash; Sintesi bilanci &ndash; Ultimi ${years.length} esercizi</h2>
-<table>
-<thead><tr>
-  <th style="width:45%">Voce di bilancio</th>
-  ${yearHeaders}
-</tr></thead>
-<tbody>
+<table><thead><tr>
+  <th style="width:45%">Voce di bilancio</th>${yearHeaders}
+</tr></thead><tbody>
 ${bilRow('Ricavi (valore produzione)', 'ricavi')}
 ${bilRow('EBITDA', 'ebitda')}
 ${bilRow('EBIT', 'ebit')}
@@ -351,35 +309,25 @@ ${bilRow('Passivit&agrave; correnti', 'passivitaCorrenti')}
 ${bilRow('Debiti tributari', 'debitiTributari')}
 ${bilRow('Debiti previdenziali', 'debitiPrevidenziali')}
 ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
-</tbody>
-</table>
-
-<!-- 3. KPI -->
+</tbody></table>
 <h2>3 &mdash; KPI sintetici &ndash; Anno ${annoKpi}</h2>
-<p class="muted">Calcolati con formule deterministiche.
+<p class="muted">Calcolati con formule deterministiche.&nbsp;
   <span style="color:#166534;font-weight:bold">&#9632; positivo</span>&nbsp;
   <span style="color:#92400e;font-weight:bold">&#9632; attenzione</span>&nbsp;
   <span style="color:#991b1b;font-weight:bold">&#9632; critico</span>
 </p>
-<table>
-<thead><tr>
+<table><thead><tr>
   <th style="width:26%">Indice</th>
   <th style="width:52%">Formula</th>
   <th style="width:22%;text-align:right">Valore</th>
-</tr></thead>
-<tbody>${kpiTableRows}</tbody>
-</table>
-
-<!-- 4. COPERTURA -->
+</tr></thead><tbody>${kpiTableRows}</tbody></table>
 <h2>4 &mdash; Residuo GSE e indici di copertura</h2>
 <p><strong>Importo residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}&emsp;<strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}&emsp;<strong>Fonte:</strong>&nbsp;PDF allegato</p>
-<table>
-<thead><tr>
+<table><thead><tr>
   <th style="width:36%">Indice di copertura</th>
   <th style="width:38%">Calcolo</th>
   <th style="width:26%;text-align:right">Valore</th>
-</tr></thead>
-<tbody>
+</tr></thead><tbody>
 <tr style="background-color:#ffffff">
   <td style="font-weight:bold">Cassa / Residuo GSE</td>
   <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.disponibilitaLiquide?.value ?? null)} / ${fmt(residuo)}</td>
@@ -395,33 +343,24 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
   <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.patrimonioNetto?.value ?? null)} / ${fmt(residuo)}</td>
   <td style="text-align:right;font-weight:bold">${kpis.patrimonioResiduo}</td>
 </tr>
-</tbody>
-</table>
+</tbody></table>
 <div class="copertura-note">${esc(narrative.commentoCopertura ?? '')}</div>
-
-<!-- 5. CHECKLIST -->
 <h2>5 &mdash; Checklist GSE ed extraprofitti</h2>
-<table>
-<thead><tr>
+<table><thead><tr>
   <th style="width:40%">Voce verificata</th>
   <th style="width:16%">Esito</th>
   <th style="width:44%">Dettaglio riscontrato</th>
-</tr></thead>
-<tbody>
+</tr></thead><tbody>
 ${checkRow('Debiti iscritti verso GSE nello SP', checklist.debitiGSE)}
 ${checkRow('Accantonamenti Fondo Rischi extraprofitti', checklist.accantonamenti)}
 ${checkRow('Riduzioni ricavi per effetto della norma', checklist.riduzioniRicavi)}
 ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
-</tbody>
-</table>
-
-</div><!-- /content -->
-
+</tbody></table>
+</div>
 <div class="footer">
   Report generato automaticamente &mdash; KPI calcolati con formule deterministiche &mdash; Narrativa generata da AI &mdash;
   Aprire con Microsoft Word e salvare come .docx per la versione editabile. &mdash; ${generatedDate}
 </div>
-
 </body>
 </html>`;
 };
@@ -429,16 +368,13 @@ ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
 export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const htmlContent = buildHtml(extractedData, narrativeData);
-
   const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
 
   const handleDownloadDocx = () => {
     const blob = new Blob([htmlContent], { type: 'application/msword' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `GSE_Report_${company}.doc`;
-    a.click();
+    a.href = url; a.download = `GSE_Report_${company}.doc`; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -446,9 +382,7 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
     const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `GSE_Report_${company}.html`;
-    a.click();
+    a.href = url; a.download = `GSE_Report_${company}.html`; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -495,13 +429,13 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
         </div>
       </div>
 
-      {/* Preview iframe */}
-      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+      {/* Preview iframe — nessun border-radius per non tagliare l'header a piena larghezza */}
+      <div className="border border-slate-200 overflow-hidden shadow-sm">
         <iframe
           ref={iframeRef}
           srcDoc={htmlContent}
-          className="w-full"
-          style={{ height: '82vh', border: 'none' }}
+          className="w-full block"
+          style={{ height: '82vh', border: 'none', display: 'block' }}
           title="Report GSE Preview"
         />
       </div>
