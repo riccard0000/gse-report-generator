@@ -73,7 +73,7 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
     return `<tr style="background-color:${bg}">
       <td>${label}</td>
       <td style="font-weight:bold;color:${iconColor};text-align:center">${icon}&nbsp;${item.presente ? 'Presente' : 'Assente'}</td>
-      <td style="font-size:9.5pt;color:#374151">${esc(item.dettaglio || '&mdash;')}</td>
+      <td style="color:#374151">${esc(item.dettaglio || '&mdash;')}</td>
     </tr>`;
   };
 
@@ -117,7 +117,7 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
     const valStyle = color ? `font-weight:bold;color:${color}` : '';
     return `<tr style="background-color:${bg}">
       <td style="font-weight:bold">${label}</td>
-      <td style="font-size:9.5pt;color:#6b7280">${formula}</td>
+      <td style="color:#6b7280">${formula}</td>
       <td style="text-align:right;${valStyle}">${val}</td>
     </tr>`;
   }).join('');
@@ -133,9 +133,9 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
 html, body { margin:0; padding:0; width:100%; }
 body {
   font-family: Calibri, Arial, sans-serif;
-  font-size: 11pt;
+  font-size: 10.5pt;
   color: #1d2733;
-  line-height: 1.55;
+  line-height: 1.4;
   background-color: #ffffff;
 }
 .doc-header {
@@ -174,49 +174,48 @@ body {
 .meta-cell strong { color: #ffffff; }
 .esito-badge {
   display: inline-block;
-  font-size: 9.5pt;
+  font-size: 9pt;
   font-weight: bold;
-  padding: 3px 12px;
+  padding: 2px 10px;
   border: 2px solid ${esitoBorder(esitoStr)};
   background-color: ${esitoBg(esitoStr)};
   color: ${esitoColor(esitoStr)};
   border-radius: 3px;
 }
-.content { padding: 20px 32px 8px; }
+.content { padding: 16px 32px 8px; }
 
-/* Interruzione di pagina prima di ogni h2, tranne il primo */
 h2 {
-  font-size: 11pt;
+  font-size: 10.5pt;
   font-weight: bold;
   color: #0f3460;
-  margin: 20px 0 8px 0;
-  padding: 5px 10px;
+  margin: 16px 0 6px 0;
+  padding: 4px 10px;
   background-color: #eef4fb;
   border-left: 4px solid #0f3460;
-  /* interruzione di pagina — applicata a tutti */
   break-before: page;
   page-break-before: always;
 }
-/* Il primo capitolo non ha interruzione */
 h2.no-break {
   break-before: auto;
   page-break-before: auto;
 }
+h3 { font-size: 9.5pt; font-weight: bold; color: #1e3a5f; margin: 10px 0 2px 0; }
+p   { font-size: 10pt; margin: 0 0 5px 0; color: #374151; }
+.muted { font-size: 8.5pt; color: #6b7280; }
 
-h3 { font-size: 10pt; font-weight: bold; color: #1e3a5f; margin: 12px 0 3px 0; }
-p   { font-size: 10.5pt; margin: 0 0 6px 0; color: #374151; }
-.muted { font-size: 9pt; color: #6b7280; }
+/* Tabelle compatte */
 table {
   border-collapse: collapse;
   width: 100%;
   table-layout: fixed;
-  margin: 5px 0 14px 0;
-  font-size: 10pt;
+  margin: 4px 0 10px 0;
+  font-size: 8.5pt;
+  line-height: 1.3;
 }
 th {
   font-weight: bold;
-  font-size: 10pt;
-  padding: 7px 10px;
+  font-size: 8.5pt;
+  padding: 5px 8px;
   border: 1px solid #1e3a5f;
   text-align: left;
   vertical-align: middle;
@@ -224,48 +223,48 @@ th {
   color: #ffffff;
 }
 td {
-  padding: 5px 10px;
+  padding: 3px 8px;
   border: 1px solid #cbd5e1;
   vertical-align: top;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
+
 .narrative-box {
   background-color: #f8fafc;
   border: 1px solid #e2e8f0;
   border-left: 4px solid #3b82f6;
-  padding: 10px 14px;
-  margin-bottom: 8px;
+  padding: 8px 12px;
+  margin-bottom: 7px;
 }
-.narrative-box h3 { margin: 0 0 4px 0; color: #1e40af; font-size: 10pt; }
-.narrative-box p  { margin: 0; font-size: 10pt; color: #374151; }
+.narrative-box h3 { margin: 0 0 3px 0; color: #1e40af; font-size: 9.5pt; }
+.narrative-box p  { margin: 0; font-size: 9.5pt; color: #374151; }
 .conclusione-box {
   background-color: ${esitoBg(esitoStr)};
   border: 1px solid ${esitoBorder(esitoStr)};
   border-left: 4px solid ${esitoColor(esitoStr)};
-  padding: 10px 14px;
-  margin-bottom: 8px;
+  padding: 8px 12px;
+  margin-bottom: 7px;
 }
-.conclusione-box h3 { margin: 0 0 4px 0; color: ${esitoColor(esitoStr)}; font-size: 10pt; }
-.conclusione-box p  { margin: 0; font-size: 10pt; color: #1d2733; }
+.conclusione-box h3 { margin: 0 0 3px 0; color: ${esitoColor(esitoStr)}; font-size: 9.5pt; }
+.conclusione-box p  { margin: 0; font-size: 9.5pt; color: #1d2733; }
 .copertura-note {
   background-color: #fffbeb;
   border: 1px solid #fcd34d;
   border-left: 4px solid #d97706;
-  padding: 8px 12px;
-  font-size: 9.5pt;
+  padding: 6px 10px;
+  font-size: 8.5pt;
   color: #78350f;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .footer {
   border-top: 1px solid #e2e8f0;
-  margin: 16px 32px 0;
-  padding: 8px 0 20px;
-  font-size: 8pt;
+  margin: 12px 32px 0;
+  padding: 6px 0 16px;
+  font-size: 7.5pt;
   color: #9ca3af;
 }
 
-/* In stampa/PDF: assicura che il break venga rispettato */
 @media print {
   h2 { break-before: page; page-break-before: always; }
   h2.no-break { break-before: auto; page-break-before: auto; }
@@ -289,7 +288,6 @@ td {
 </div>
 <div class="content">
 
-<!-- classe no-break sul primo h2: non vuoi saltare pagina subito dopo l'header -->
 <h2 class="no-break">1 &mdash; Nota sintetica di esito</h2>
 <div class="narrative-box">
   <h3>&#128200; Analisi Ricavi e Utile</h3>
@@ -308,7 +306,6 @@ td {
   <p>${esc(narrative.conclusione ?? '')}</p>
 </div>
 
-<!-- Dal capitolo 2 in poi: break-before:page attivo -->
 <h2>2 &mdash; Sintesi bilanci &ndash; Ultimi ${years.length} esercizi</h2>
 <table><thead><tr>
   <th style="width:45%">Voce di bilancio</th>${yearHeaders}
@@ -354,17 +351,17 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </tr></thead><tbody>
 <tr style="background-color:#ffffff">
   <td style="font-weight:bold">Cassa / Residuo GSE</td>
-  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.disponibilitaLiquide?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="color:#6b7280">${fmt(lastYear?.disponibilitaLiquide?.value ?? null)} / ${fmt(residuo)}</td>
   <td style="text-align:right;font-weight:bold">${kpis.cassaResiduo}</td>
 </tr>
 <tr style="background-color:#f8fafc">
   <td style="font-weight:bold">Attivo circ. / Residuo GSE</td>
-  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.attivoCircolante?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="color:#6b7280">${fmt(lastYear?.attivoCircolante?.value ?? null)} / ${fmt(residuo)}</td>
   <td style="text-align:right;font-weight:bold">${kpis.attivoCircResiduo}</td>
 </tr>
 <tr style="background-color:#ffffff">
   <td style="font-weight:bold">Patrimonio netto / Residuo GSE</td>
-  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.patrimonioNetto?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="color:#6b7280">${fmt(lastYear?.patrimonioNetto?.value ?? null)} / ${fmt(residuo)}</td>
   <td style="text-align:right;font-weight:bold">${kpis.patrimonioResiduo}</td>
 </tr>
 </tbody></table>
