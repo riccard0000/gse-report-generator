@@ -53,6 +53,57 @@ function cleanRawText(raw: string, maxLen = 60): string {
   return s;
 }
 
+/**
+ * Cerca una sottostringa di rawText nel contenuto testuale di una pagina PDF
+ * e restituisce il bbox approssimato del primo match.
+ * Usa i primi N token del rawText come query per essere robusto a spazi/maiuscole.
+ */
+async function findBboxByText(
+  pdf: pdfjsLib.PDFDocumentProxy,
+  pageNum: number,
+  rawText: string,
+): Promise<{ x0: number; y0: number; x1: number; y1: number } | null> {
+  try {
+    const page    = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    // Prendo le prime 4 parole significative del rawText come query
+    const queryWords = rawText
+      .toLowerCase()
+      .replace(/[^a-z0-9àèéìòù\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2)
+      .slice(0, 4);
+    if (queryWords.length === 0) return null;
+
+    // Cerco l'item il cui testo contiene la prima parola chiave
+    const items = content.items as pdfjsLib.TextItem[];
+    let bestItem: pdfjsLib.TextItem | null = null;
+    for (const item of items) {
+      const txt = item.str.toLowerCase();
+      const matchCount = queryWords.filter(w => txt.includes(w)).length;
+      if (matchCount >= Math.min(2, queryWords.length)) {
+        bestItem = item;
+        break;
+      }
+    }
+    // Fallback: almeno la prima parola
+    if (!bestItem) {
+      bestItem = items.find(it => it.str.toLowerCase().includes(queryWords[0])) ?? null;
+    }
+    if (!bestItem) return null;
+
+    // Transform PDF: [a,b,c,d,e,f] → x=e, y=f (origin bottom-left)
+    const tf = bestItem.transform;
+    const x0 = tf[4];
+    const y0 = tf[5];
+    const x1 = x0 + bestItem.width;
+    const y1 = y0 + bestItem.height;
+    return { x0, y0, x1, y1 };
+  } catch {
+    return null;
+  }
+}
+
 interface NumericInputProps {
   value: number | undefined | null;
   onChange: (n: number) => void;
@@ -265,10 +316,56 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
 
-  const handleFieldFocus = (field: ExtractedField<any> | null, colorIndex: number) => {
-    if (!field?.bbox || !field?.page) { setActiveHighlight(null); return; }
-    setActiveHighlight({ page: field.page, bbox: field.bbox, color: HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0] });
-  };
+  // Cache del PDFDocumentProxy per la ricerca testo (separato dal viewer)
+  const pdfDocCacheRef = useRef<Map<number, pdfjsLib.PDFDocumentProxy>>(new Map());
+
+  const getPdfDoc = useCallback(async (fileIdx: number, file: File): Promise<pdfjsLib.PDFDocumentProxy> => {
+    if (pdfDocCacheRef.current.has(fileIdx)) {
+      return pdfDocCacheRef.current.get(fileIdx)!;
+    }
+    const ab  = await file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data: ab }).promise;
+    pdfDocCacheRef.current.set(fileIdx, doc);
+    return doc;
+  }, []);
+
+  const handleFieldFocus = useCallback(async (
+    field: ExtractedField<any> | null,
+    colorIndex: number,
+    fileIdx: number,
+  ) => {
+    const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
+
+    // Caso 1: bbox già disponibile → highlight immediato
+    if (field?.bbox && field?.page) {
+      setActiveHighlight({ page: field.page, bbox: field.bbox, color });
+      return;
+    }
+
+    // Caso 2: bbox null ma page e rawText disponibili → ricerca testo nel PDF
+    if (field?.page && field?.rawText && files[fileIdx]) {
+      setActiveHighlight(null); // pulisco mentre cerco
+      try {
+        const doc  = await getPdfDoc(fileIdx, files[fileIdx]);
+        const bbox = await findBboxByText(doc, field.page, field.rawText);
+        if (bbox) {
+          setActiveHighlight({ page: field.page, bbox, color });
+        } else {
+          // Nessun match testo: navigo comunque alla pagina giusta senza highlight
+          setActiveHighlight({
+            page: field.page,
+            bbox: { x0: 0, y0: 0, x1: 0, y1: 0 },
+            color,
+          });
+        }
+      } catch {
+        setActiveHighlight(null);
+      }
+      return;
+    }
+
+    setActiveHighlight(null);
+  }, [files, getPdfDoc]);
 
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number) => {
     setData(prev => {
@@ -370,12 +467,15 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field   = year[key] as ExtractedField<number>;
                   const hasBbox = !!field?.bbox && !!field?.page;
+                  const hasPage = !!field?.page;
+                  // Mostra badge pagina se c'è almeno la pagina (con o senza bbox)
+                  const badgeColor = hasBbox ? 'text-blue-500' : 'text-slate-400';
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
                         {label}
-                        {hasBbox && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] font-medium text-blue-500">
+                        {hasPage && (
+                          <span className={`inline-flex items-center gap-0.5 text-[9px] font-medium ${badgeColor}`}>
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
@@ -383,9 +483,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                       <NumericInput
                         value={field?.value}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          hasBbox ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
+                          hasPage ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
                         }`}
-                        onFocus={() => handleFieldFocus(field, yearIdx)}
+                        onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                         placeholder="0"
                       />
