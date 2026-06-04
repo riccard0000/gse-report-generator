@@ -23,19 +23,68 @@ export interface DiagnosticRun {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Costanti
 // ---------------------------------------------------------------------------
 
-const BASE_URL = 'https://riccard0000.github.io/gse-report-generator';
+/**
+ * Base URL derivata a runtime da Vite:
+ *  - locale dev  → "/"
+ *  - GitHub Pages → "/gse-report-generator/"
+ * Normalizziamo: sempre termina con "/", mai doppio slash.
+ */
+function resolveBase(): string {
+  // import.meta.env.BASE_URL è iniettato da Vite al build time; in TS puro
+  // (es. Jest) cade nel catch e usa "/".
+  try {
+    const raw: string = import.meta.env.BASE_URL ?? '/';
+    return raw.endsWith('/') ? raw : `${raw}/`;
+  } catch {
+    return '/';
+  }
+}
+
+// Calcolata una volta sola al load del modulo.
+const APP_BASE = resolveBase();
+
+// URL assoluto di GitHub Pages — usato solo per i check che richiedono un URL
+// completo (es. no-cors verso la root). In ambiente locale punta a localhost.
+const PAGES_ORIGIN =
+  typeof window !== 'undefined'
+    ? window.location.origin
+    : 'https://riccard0000.github.io';
+
 const PROXY_URL = 'https://gse-proxy.riccardoooo.workers.dev';
 const PDF_WORKER_URL =
   'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 
+/**
+ * Nomi PDF con encoding %20 — devono corrispondere ESATTAMENTE ai file
+ * presenti nella root del repo (e quindi serviti da GitHub Pages):
+ *   OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf
+ *   OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf
+ *   OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf
+ */
 const PDF_FILES = [
-  { id: 'pdf-2022', label: 'PDF GEOSOL 2022', name: 'OUTLASTBILIC0163700089220202220GEOSOL.pdf' },
-  { id: 'pdf-2023', label: 'PDF GEOSOL 2023', name: 'OUTLASTBILIC0163700089220202320GEOSOL.pdf' },
-  { id: 'pdf-2024', label: 'PDF GEOSOL 2024', name: 'OUTLASTBILIC0163700089220202420GEOSOL.pdf' },
+  {
+    id: 'pdf-2022',
+    label: 'PDF GEOSOL 2022',
+    name: 'OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
+  },
+  {
+    id: 'pdf-2023',
+    label: 'PDF GEOSOL 2023',
+    name: 'OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
+  },
+  {
+    id: 'pdf-2024',
+    label: 'PDF GEOSOL 2024',
+    name: 'OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf',
+  },
 ];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 async function timedFetch(
   url: string,
@@ -87,15 +136,14 @@ async function checkGet(
 // Check 1 — GitHub Pages root
 // ---------------------------------------------------------------------------
 async function checkGitHubPages(): Promise<DiagnosticCheck> {
-  return checkGet('github-pages-root', 'GitHub Pages (root app)', `${BASE_URL}/`, 'no-cors').then(
-    (c) => ({
-      ...c,
-      // no-cors → opaque → res.ok è sempre false; usiamo status 0 come successo opaco
-      status: c.details?.status === 0 || c.status === 'ok' ? 'ok' : c.status,
-      message:
-        c.details?.status === 0 ? 'Raggiungibile (opaque)' : c.message,
-    })
-  );
+  const url = `${PAGES_ORIGIN}${APP_BASE}`;
+  return checkGet('github-pages-root', 'GitHub Pages (root app)', url, 'no-cors').then((c) => ({
+    ...c,
+    // no-cors → opaque → res.ok è sempre false; status 0 = successo opaco
+    status: c.details?.status === 0 || c.status === 'ok' ? 'ok' : c.status,
+    message: c.details?.status === 0 ? 'Raggiungibile (opaque)' : c.message,
+    details: { ...c.details, url },
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +171,10 @@ async function checkProxyCors(): Promise<DiagnosticCheck> {
     const res = await fetch(PROXY_URL, {
       method: 'OPTIONS',
       mode: 'cors',
-      headers: { 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+      headers: {
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type',
+      },
     });
     const durationMs = Math.round(performance.now() - t0);
     const allow = res.headers.get('access-control-allow-origin') ?? '';
@@ -143,10 +194,13 @@ async function checkProxyCors(): Promise<DiagnosticCheck> {
 }
 
 // ---------------------------------------------------------------------------
-// Check 5-7 — PDF GEOSOL (HEAD se possibile, fallback GET parziale)
+// Check 5-7 — PDF GEOSOL (HEAD → fallback GET parziale)
 // ---------------------------------------------------------------------------
 async function checkPdf(id: string, label: string, fileName: string): Promise<DiagnosticCheck> {
-  const url = `${BASE_URL}/${fileName}`;
+  // L'URL è costruito con APP_BASE che viene da import.meta.env.BASE_URL:
+  //   produzione → "https://riccard0000.github.io/gse-report-generator/OUT_LASTBIL_…pdf"
+  //   locale dev  → "http://localhost:5173/OUT_LASTBIL_…pdf"
+  const url = `${PAGES_ORIGIN}${APP_BASE}${fileName}`;
   try {
     const { res, durationMs } = await timedFetch(url, { method: 'HEAD', mode: 'cors' });
     if (res.ok || res.status === 200) {
@@ -160,7 +214,7 @@ async function checkPdf(id: string, label: string, fileName: string): Promise<Di
         details: { url, status: res.status, contentLength: size },
       };
     }
-    // Alcuni server non supportano HEAD → riprova GET solo i primi 4 KB
+    // HEAD non supportato → GET solo i primi 4 KB
     const { res: res2, durationMs: d2 } = await timedFetch(url, {
       method: 'GET',
       mode: 'cors',
@@ -185,10 +239,8 @@ async function checkPdf(id: string, label: string, fileName: string): Promise<Di
 // Check 8 — MatchResult kind consistency (contract test lato browser)
 // ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
-  // Specchia la logica di DataVerification.tsx
   if (segments.length < 2) return false;
-  // Se ogni segmento non è una semplice voce contabile ma contiene un numero
-  // dopo la parola chiave, la trattiamo come formula calcolata (es. "EBIT 160.638")
+  // Ogni segmento ha un numero inline → formula calcolata (es. "EBIT 160.638")
   const looksLikeValuedSegment = (s: string) => /\d/.test(s) && s.trim().length > 3;
   return segments.every(looksLikeValuedSegment);
 }
@@ -197,7 +249,10 @@ type MatchKind = 'single' | 'formula' | 'multi-sum';
 
 export function matchKindFromRawText(rawText: string | null | undefined): MatchKind {
   if (!rawText) return 'single';
-  const segments = rawText.split('+').map((s) => s.trim()).filter(Boolean);
+  const segments = rawText
+    .split('+')
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (segments.length <= 1) return 'single';
   return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
 }
@@ -225,7 +280,7 @@ const CONTRACT_CASES: ContractCase[] = [
     expectedKind: 'single',
   },
   {
-    label: 'rawText null',
+    label: 'rawText vuoto',
     rawText: '',
     expectedKind: 'single',
   },
