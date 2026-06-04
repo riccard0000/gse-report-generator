@@ -5,6 +5,75 @@ import { CheckCircle, ChevronRight } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
+// ─────────────────────────────────────────────────────────────
+// Formattazione numeri in stile italiano
+// ─────────────────────────────────────────────────────────────
+
+/** Formatta un numero intero/decimale con punti migliaia e virgola decimale.
+ *  es. 1361443 → "1.361.443"   es. 115097.5 → "115.097,50" */
+const formatIT = (value: number | string | undefined | null): string => {
+  if (value === null || value === undefined || value === '') return '';
+  const num = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
+  if (isNaN(num)) return String(value);
+  // Usa Intl.NumberFormat con locale italiano
+  return new Intl.NumberFormat('it-IT', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(num);
+};
+
+/** Converte una stringa formattata in stile italiano in numero.
+ *  es. "1.361.443" → 1361443   es. "115.097,50" → 115097.5 */
+const parseIT = (s: string): number => {
+  // Rimuove i punti migliaia, sostituisce la virgola decimale con il punto
+  const cleaned = s.replace(/\./g, '').replace(',', '.');
+  return parseFloat(cleaned) || 0;
+};
+
+// ─────────────────────────────────────────────────────────────
+// Input numerico formattato in italiano
+// ─────────────────────────────────────────────────────────────
+interface NumericInputProps {
+  value: number | undefined | null;
+  onChange: (n: number) => void;
+  onFocus?: () => void;
+  className?: string;
+  placeholder?: string;
+}
+
+const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, className, placeholder }) => {
+  const [editing, setEditing]       = useState(false);
+  const [rawText, setRawText]       = useState('');
+
+  const displayValue = editing ? rawText : formatIT(value);
+
+  const handleFocus = () => {
+    // Mostra il numero grezzo (senza punti) per facilitare la modifica
+    setRawText(value !== null && value !== undefined ? String(value) : '');
+    setEditing(true);
+    onFocus?.();
+  };
+
+  const handleBlur = () => {
+    const n = parseIT(rawText);
+    onChange(n);
+    setEditing(false);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      className={className}
+      value={displayValue}
+      placeholder={placeholder}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      onChange={e => editing && setRawText(e.target.value)}
+    />
+  );
+};
+
 interface Props {
   files: File[];
   extractedData: ExtractedData;
@@ -45,10 +114,7 @@ interface ActiveHighlight {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Componente PDF isolato: riceve il File come prop e usa
-// key={pdfFileIndex} nel parent per forzare il remount completo
-// ogni volta che si cambia tab. In questo modo non c'\u00e8 mai
-// disallineamento tra pdfDocRef e il file visualizzato.
+// Componente PDF isolato
 // ─────────────────────────────────────────────────────────────
 interface PdfViewerProps {
   file: File;
@@ -61,10 +127,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const canvasRef  = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const pdfDocRef  = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  // token di cancellazione: se cambia file (remount) le promise in volo vengono ignorate
   const cancelRef  = useRef(false);
 
-  // Carica il PDF una sola volta al mount (il remount via key garantisce file corretto)
   useEffect(() => {
     cancelRef.current = false;
     pdfDocRef.current = null;
@@ -121,7 +185,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     }
   }, []);
 
-  // Salta alla pagina dell'highlight quando arriva
   useEffect(() => {
     if (highlight?.page && highlight.page !== currentPage) {
       setCurrentPage(highlight.page);
@@ -132,7 +195,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (pdfDocRef.current) renderPage(currentPage, highlight);
   }, [currentPage, highlight, renderPage]);
 
-  // Ritenta il render quando il doc finisce di caricarsi
   useEffect(() => {
     const interval = setInterval(() => {
       if (pdfDocRef.current) {
@@ -145,7 +207,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   return (
     <>
-      {/* Header navigazione pagine */}
       <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
         <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
         <div className="flex items-center gap-2">
@@ -153,17 +214,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
             disabled={currentPage <= 1}
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-          >‹ Prec</button>
+          >&#8249; Prec</button>
           <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
           <button
             disabled={currentPage >= totalPages}
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-          >Succ ›</button>
+          >Succ &#8250;</button>
         </div>
       </div>
 
-      {/* Canvas PDF */}
       <div className="flex-1 overflow-y-auto flex justify-center p-4">
         <div className="relative shadow-2xl">
           <canvas ref={canvasRef} className="block" />
@@ -175,7 +235,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         </div>
       </div>
 
-      {/* Legenda highlight */}
       {highlight && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
           <span
@@ -197,7 +256,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const [activeTab, setActiveTab]     = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
 
-  // Indice del file PDF da mostrare (null = tab GSE)
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
 
@@ -270,12 +328,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               </label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">€</span>
-                <input
-                  type="number" min={0} step={0.01}
+                <NumericInput
+                  value={data.gseResidual?.value}
                   className="w-full pl-8 pr-3 py-3 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition"
-                  value={data.gseResidual?.value ?? ''}
-                  onChange={e => setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: parseFloat(e.target.value) || 0 } }))}
-                  placeholder="0.00"
+                  onChange={n => setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }))}
+                  placeholder="0"
                 />
               </div>
               {data.gseResidual?.rawText && (
@@ -311,7 +368,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   />
                 </div>
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field  = year[key] as ExtractedField<number>;
+                  const field   = year[key] as ExtractedField<number>;
                   const hasBbox = !!field?.bbox && !!field?.page;
                   return (
                     <div key={key as string}>
@@ -323,14 +380,13 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                           </span>
                         )}
                       </label>
-                      <input
-                        type="number" step={0.01}
+                      <NumericInput
+                        value={field?.value}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
                           hasBbox ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
                         }`}
-                        value={field?.value ?? ''}
                         onFocus={() => handleFieldFocus(field, colorIdx)}
-                        onChange={e => updateYearField(yearIdx, key, parseFloat(e.target.value) || 0)}
+                        onChange={n => updateYearField(yearIdx, key, n)}
                         placeholder="0"
                       />
                       {field?.rawText && (
@@ -375,8 +431,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             </div>
           </>
         ) : (
-          // key={pdfFileIndex} forza il remount completo di PdfViewer ad ogni cambio tab
-          // garantendo che pdfDocRef punti SEMPRE al file corretto
           <PdfViewer key={pdfFileIndex} file={pdfFile} highlight={activeHighlight} />
         )}
       </div>
