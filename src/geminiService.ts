@@ -122,36 +122,119 @@ const callOpenRouter = async (
   }
 };
 
-// ─── Export: Estrazione dati dai PDF ──────────────────────────────────────
+// ─── Prompt per singolo PDF (restituisce yearsData con 1 anno + dati anagrafici) ─
+const SINGLE_PDF_PROMPT = (fileName: string) =>
+  `${EXTRACTION_PROMPT}
+
+NOTA: Stai analizzando UN SOLO documento (${fileName}).
+Nell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).
+Compila comunque companyName, vatNumber, gseResidual e checklist.`;
+
+// ─── Merge di più ExtractedData parziali in un unico oggetto ──────────────
+const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
+  // Prendi dati anagrafici dal primo risultato valido
+  const base = results[0];
+
+  // Aggrega yearsData da tutti i risultati, ordina per anno desc
+  const allYears = results
+    .flatMap((r) => r.yearsData ?? [])
+    .filter((y) => y && y.year)
+    .sort((a, b) => Number(b.year) - Number(a.year));
+
+  // Deduplica per anno (tieni il primo occorrenza, più affidabile)
+  const seenYears = new Set<string>();
+  const yearsData = allYears.filter((y) => {
+    if (seenYears.has(y.year)) return false;
+    seenYears.add(y.year);
+    return true;
+  });
+
+  // Merge checklist: una voce è "presente" se almeno un risultato la rileva
+  const mergeChecklistField = (key: keyof ExtractedData['checklist']) => {
+    const found = results.find((r) => r.checklist?.[key]?.presente === true);
+    return found?.checklist?.[key] ?? base.checklist?.[key];
+  };
+
+  return {
+    ...base,
+    yearsData,
+    checklist: {
+      debitiGSE:      mergeChecklistField('debitiGSE'),
+      accantonamenti: mergeChecklistField('accantonamenti'),
+      riduzioniRicavi: mergeChecklistField('riduzioniRicavi'),
+      contenziosi:    mergeChecklistField('contenziosi'),
+    },
+  };
+};
+
+// ─── Export: Estrazione dati dai PDF (3 chiamate parallele) ───────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
 ): Promise<ExtractedData> => {
   onProgress?.('Estrazione testo dai PDF...');
 
-  const docTexts: string[] = [];
+  // 1. Estrai testo da ogni PDF in sequenza (pesante sul browser, meglio non parallelizzare)
+  const docTexts: { fileName: string; text: string }[] = [];
   for (const file of files) {
     onProgress?.(`Lettura: ${file.name}`);
     const text = await extractTextFromPdf(file);
-    docTexts.push(`\n=== DOCUMENTO: ${file.name} ===\n${text}`);
+    docTexts.push({ fileName: file.name, text });
   }
 
-  onProgress?.('Analisi AI — estrazione dati strutturati...');
-  const text = await callOpenRouter(
-    OPENROUTER_MODEL_EXTRACT,
-    [
-      { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
-      { role: 'user', content: `${EXTRACTION_PROMPT}\n\n${docTexts.join('\n\n')}` },
-    ],
-    onProgress
+  onProgress?.(`Analisi AI — ${docTexts.length} chiamate parallele in corso...`);
+
+  // 2. Lancia una chiamata AI per ogni PDF in parallelo
+  const settled = await Promise.allSettled(
+    docTexts.map(({ fileName, text }, idx) =>
+      callOpenRouter(
+        OPENROUTER_MODEL_EXTRACT,
+        [
+          {
+            role: 'system',
+            content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.',
+          },
+          {
+            role: 'user',
+            content: `${SINGLE_PDF_PROMPT(fileName)}\n\n=== DOCUMENTO: ${fileName} ===\n${text}`,
+          },
+        ],
+        (msg) => onProgress?.(`[PDF ${idx + 1}/${docTexts.length}] ${msg}`)
+      )
+    )
   );
 
-  try {
-    const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    return JSON.parse(cleaned) as ExtractedData;
-  } catch {
-    throw new Error("La risposta dell'AI non e un JSON valido. Riprovare.");
+  // 3. Raccogli i risultati riusciti, logga gli errori
+  const parsedResults: ExtractedData[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < settled.length; i++) {
+    const s = settled[i];
+    if (s.status === 'fulfilled') {
+      try {
+        const cleaned = s.value.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        parsedResults.push(JSON.parse(cleaned) as ExtractedData);
+      } catch {
+        errors.push(`PDF ${i + 1} (${docTexts[i].fileName}): risposta AI non è JSON valido`);
+      }
+    } else {
+      errors.push(`PDF ${i + 1} (${docTexts[i].fileName}): ${s.reason instanceof Error ? s.reason.message : String(s.reason)}`);
+    }
   }
+
+  if (parsedResults.length === 0) {
+    throw new Error(
+      `Nessuna estrazione riuscita.\n${errors.join('\n')}`
+    );
+  }
+
+  if (errors.length > 0) {
+    onProgress?.(`⚠️ Attenzione: ${errors.length} PDF non estratti — ${errors.join('; ')}`);
+  }
+
+  // 4. Merge dei risultati parziali
+  onProgress?.('Merge dati estratti...');
+  return mergeExtractedData(parsedResults);
 };
 
 // ─── Export: Generazione narrativa tecnica (con KPI deterministici) ─────────
