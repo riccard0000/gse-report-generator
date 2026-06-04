@@ -32,7 +32,6 @@ const esitoBorder = (esito: string): string => {
   return '#fcd34d';
 };
 
-// Colora il valore KPI in base a soglie note
 const kpiStyle = (key: string, val: string): string => {
   const n = parseFloat(val.replace(',', '.'));
   if (isNaN(n)) return '';
@@ -53,11 +52,11 @@ const kpiStyle = (key: string, val: string): string => {
 
 const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
   const company = String(data.companyName?.value ?? 'N.D.');
-  const piva = String(data.vatNumber?.value ?? 'N.D.');
+  const piva    = String(data.vatNumber?.value ?? 'N.D.');
   const residuo = data.gseResidual?.value ?? null;
-  const years = data.yearsData;
+  const years   = data.yearsData;
   const lastYear = years[years.length - 1];
-  const kpis = calculateKpis(lastYear, residuo);
+  const kpis    = calculateKpis(lastYear, residuo);
   const annoKpi = lastYear?.year ?? 'N.D.';
   const esitoStr = narrative.esito ?? 'CAUTELA';
   const generatedDate = new Date().toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
@@ -68,27 +67,26 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
   const checklist = data.checklist;
 
   const checkRow = (label: string, item: { presente: boolean; dettaglio: string }) => {
-    const icon = item.presente ? '&#9888;' : '&#10003;';
+    const icon      = item.presente ? '&#9888;' : '&#10003;';
     const iconColor = item.presente ? '#b91c1c' : '#166534';
-    const bg = item.presente ? '#fff5f5' : '#f0fdf4';
+    const bg        = item.presente ? '#fff5f5' : '#f0fdf4';
     return `<tr style="background-color:${bg}">
       <td>${label}</td>
-      <td style="font-weight:bold;color:${iconColor};text-align:center">${icon} ${item.presente ? 'Presente' : 'Assente'}</td>
+      <td style="font-weight:bold;color:${iconColor};text-align:center">${icon}&nbsp;${item.presente ? 'Presente' : 'Assente'}</td>
       <td style="font-size:9.5pt;color:#374151">${esc(item.dettaglio || '&mdash;')}</td>
     </tr>`;
   };
 
-  // Righe zebrate per la tabella bilanci, con evidenziazione sezioni principali
   const sectionKeys: Record<string, boolean> = {
-    ricavi: true, totaleAttivo: true, patrimonioNetto: true, attivoCircolante: true
+    ricavi: true, totaleAttivo: true, patrimonioNetto: true, attivoCircolante: true,
   };
   let bilIdx = 0;
   const bilRow = (label: string, key: keyof typeof lastYear) => {
     bilIdx++;
     const isSection = sectionKeys[key as string];
     const zebra = bilIdx % 2 === 0 ? '#f8fafc' : '#ffffff';
-    const bg = isSection ? '#eef4fb' : zebra;
-    const fw = isSection ? 'font-weight:bold;' : '';
+    const bg    = isSection ? '#eef4fb' : zebra;
+    const fw    = isSection ? 'font-weight:bold;' : '';
     const cells = years.map((y) => {
       const f = y[key] as { value: number | null } | null;
       return `<td style="text-align:right;${fw}">${fmt(f?.value ?? null)}</td>`;
@@ -96,27 +94,26 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
     return `<tr style="background-color:${bg}"><td style="${fw}">${label}</td>${cells}</tr>`;
   };
 
-  const yearWidth = Math.floor(55 / years.length);
+  const yearWidth   = Math.floor(55 / years.length);
   const yearHeaders = years.map((y) =>
     `<th style="width:${yearWidth}%;text-align:right">${y.year} (&euro;)</th>`
   ).join('');
 
-  // Righe KPI con colore semaforo
   const kpiRows: [string, string, string, string][] = [
-    ['currentRatio',        'Current ratio',        'Attivo circ. / Pass. correnti',                          kpis.currentRatio],
-    ['quickRatio',          'Quick ratio',           '(Attivo circ. &minus; Rimanenze) / Pass. correnti',      kpis.quickRatio],
-    ['cashRatio',           'Cash ratio',            'Disp. liquide / Pass. correnti',                         kpis.cashRatio],
-    ['autonomiaFinanziaria','Autonomia finanziaria', 'Patrimonio netto / Totale Attivo',                       kpis.autonomiaFinanziaria],
-    ['debtEquity',          'Debt / Equity',         'Totale Debiti / Patrimonio netto',                       kpis.debtEquity],
-    ['leverage',            'Leverage',              'Totale Attivo / Patrimonio netto',                       kpis.leverage],
-    ['pfnEbitda',           'PFN / EBITDA',          '(Deb. Breve + Deb. M/L &minus; Disp. liq.) / EBITDA',   kpis.pfnEbitda],
-    ['interestCoverage',    'Interest coverage',     'EBIT / Interessi passivi',                               kpis.interestCoverage],
-    ['ros',                 'ROS',                   'EBIT / Ricavi',                                          kpis.ros],
+    ['currentRatio',         'Current ratio',         'Attivo circ. / Pass. correnti',                         kpis.currentRatio],
+    ['quickRatio',           'Quick ratio',            '(Attivo circ. &minus; Rimanenze) / Pass. correnti',     kpis.quickRatio],
+    ['cashRatio',            'Cash ratio',             'Disp. liquide / Pass. correnti',                        kpis.cashRatio],
+    ['autonomiaFinanziaria', 'Autonomia finanziaria',  'Patrimonio netto / Totale Attivo',                      kpis.autonomiaFinanziaria],
+    ['debtEquity',           'Debt / Equity',          'Totale Debiti / Patrimonio netto',                      kpis.debtEquity],
+    ['leverage',             'Leverage',               'Totale Attivo / Patrimonio netto',                      kpis.leverage],
+    ['pfnEbitda',            'PFN / EBITDA',           '(Deb. Breve + Deb. M/L &minus; Disp. liq.) / EBITDA',  kpis.pfnEbitda],
+    ['interestCoverage',     'Interest coverage',      'EBIT / Interessi passivi',                              kpis.interestCoverage],
+    ['ros',                  'ROS',                    'EBIT / Ricavi',                                         kpis.ros],
   ];
 
   const kpiTableRows = kpiRows.map(([key, label, formula, val], i) => {
-    const color = kpiStyle(key, val);
-    const bg = i % 2 === 0 ? '#ffffff' : '#f8fafc';
+    const color    = kpiStyle(key, val);
+    const bg       = i % 2 === 0 ? '#ffffff' : '#f8fafc';
     const valStyle = color ? `font-weight:bold;color:${color}` : '';
     return `<tr style="background-color:${bg}">
       <td style="font-weight:bold">${label}</td>
@@ -130,63 +127,164 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
 <head>
 <meta charset="UTF-8"/>
 <title>Report GSE &ndash; ${esc(company)}</title>
-<!--[if mso]>
+<!--[if mso]><style>table{width:100%!important;border-collapse:collapse}td,th{word-break:normal!important}</style><![endif]-->
 <style>
-table { width:100% !important; border-collapse:collapse; }
-td, th { word-break:normal !important; overflow-wrap:break-word !important; }
-</style>
-<![endif]-->
-<style>
-body { font-family:Calibri,Arial,sans-serif; font-size:11pt; color:#1d2733; margin:0; padding:0; line-height:1.55; background-color:#f1f5f9; }
-.page { background-color:#ffffff; max-width:900px; margin:0 auto; padding:0; }
+/* Reset & base */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin:0; padding:0; width:100%; }
+body {
+  font-family: Calibri, Arial, sans-serif;
+  font-size: 11pt;
+  color: #1d2733;
+  line-height: 1.55;
+  background-color: #ffffff;
+}
 
-/* Header */
-.doc-header { background-color:#0f3460; padding:28px 32px 22px 32px; }
-.doc-header-label { font-size:9pt; color:#93c5fd; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px; }
-.doc-header h1 { font-size:17pt; font-weight:bold; color:#ffffff; margin:0 0 6px 0; }
-.doc-header-sub { font-size:9.5pt; color:#bfdbfe; margin:0; }
+/* Header navy a larghezza piena */
+.doc-header {
+  background-color: #0f3460;
+  padding: 24px 32px 20px;
+  width: 100%;
+}
+.doc-header-label {
+  font-size: 8.5pt;
+  color: #93c5fd;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+.doc-header h1 {
+  font-size: 16pt;
+  font-weight: bold;
+  color: #ffffff;
+  margin: 0 0 6px 0;
+}
+.doc-header-sub {
+  font-size: 9pt;
+  color: #bfdbfe;
+  margin: 0;
+}
 
 /* Meta bar */
-.meta-bar { background-color:#1e3a5f; padding:12px 32px; display:table; width:100%; }
-.meta-cell { display:table-cell; font-size:9.5pt; color:#e2e8f0; padding-right:24px; }
-.meta-cell strong { color:#ffffff; }
+.meta-bar {
+  background-color: #1e3a5f;
+  padding: 10px 32px;
+  width: 100%;
+  /* flexbox con fallback per Word */
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+}
+.meta-cell {
+  font-size: 9pt;
+  color: #e2e8f0;
+  padding: 3px 20px 3px 0;
+  white-space: nowrap;
+}
+.meta-cell strong { color: #ffffff; }
 
 /* Esito badge */
-.esito-badge { display:inline-block; font-size:10pt; font-weight:bold; padding:4px 14px; border:2px solid ${esitoBorder(esitoStr)}; background-color:${esitoBg(esitoStr)}; color:${esitoColor(esitoStr)}; }
+.esito-badge {
+  display: inline-block;
+  font-size: 9.5pt;
+  font-weight: bold;
+  padding: 3px 12px;
+  border: 2px solid ${esitoBorder(esitoStr)};
+  background-color: ${esitoBg(esitoStr)};
+  color: ${esitoColor(esitoStr)};
+  border-radius: 3px;
+}
 
-/* Body content */
-.content { padding:24px 32px; }
+/* Contenuto principale */
+.content { padding: 20px 32px 8px; }
 
-/* Section headers */
-h2 { font-size:11.5pt; font-weight:bold; color:#0f3460; margin:22px 0 6px 0; padding:6px 10px; background-color:#eef4fb; border-left:4px solid #0f3460; }
-h3 { font-size:10.5pt; font-weight:bold; color:#1e3a5f; margin:14px 0 4px 0; }
-p { font-size:10.5pt; margin:0 0 8px 0; color:#374151; }
-.muted { font-size:9pt; color:#6b7280; }
+/* Intestazioni sezione */
+h2 {
+  font-size: 11pt;
+  font-weight: bold;
+  color: #0f3460;
+  margin: 20px 0 8px 0;
+  padding: 5px 10px;
+  background-color: #eef4fb;
+  border-left: 4px solid #0f3460;
+}
+h3 { font-size: 10pt; font-weight: bold; color: #1e3a5f; margin: 12px 0 3px 0; }
+p   { font-size: 10.5pt; margin: 0 0 6px 0; color: #374151; }
+.muted { font-size: 9pt; color: #6b7280; }
 
-/* Tables */
-table { border-collapse:collapse; width:100%; table-layout:fixed; margin:6px 0 16px 0; font-size:10pt; font-family:Calibri,Arial,sans-serif; }
-th { font-weight:bold; font-size:10pt; padding:7px 10px; border:1px solid #94a3b8; text-align:left; vertical-align:middle; background-color:#0f3460; color:#ffffff; }
-td { padding:5px 10px; border:1px solid #cbd5e1; vertical-align:top; font-size:10pt; word-wrap:break-word; overflow-wrap:break-word; }
+/* Tabelle */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  margin: 5px 0 14px 0;
+  font-size: 10pt;
+}
+th {
+  font-weight: bold;
+  font-size: 10pt;
+  padding: 7px 10px;
+  border: 1px solid #1e3a5f;
+  text-align: left;
+  vertical-align: middle;
+  background-color: #0f3460;
+  color: #ffffff;
+}
+td {
+  padding: 5px 10px;
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
 
-/* Narrative box */
-.narrative-box { background-color:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #3b82f6; padding:12px 14px; margin-bottom:10px; }
-.narrative-box h3 { margin:0 0 5px 0; color:#1e40af; font-size:10pt; }
-.narrative-box p { margin:0; font-size:10pt; color:#374151; }
+/* Card narrativa */
+.narrative-box {
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #3b82f6;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+.narrative-box h3 { margin: 0 0 4px 0; color: #1e40af; font-size: 10pt; }
+.narrative-box p  { margin: 0; font-size: 10pt; color: #374151; }
 
-/* Conclusione box */
-.conclusione-box { background-color:${esitoBg(esitoStr)}; border:1px solid ${esitoBorder(esitoStr)}; border-left:4px solid ${esitoColor(esitoStr)}; padding:12px 14px; margin-bottom:10px; }
-.conclusione-box h3 { margin:0 0 5px 0; color:${esitoColor(esitoStr)}; font-size:10pt; }
-.conclusione-box p { margin:0; font-size:10pt; color:#1d2733; }
+/* Card conclusione */
+.conclusione-box {
+  background-color: ${esitoBg(esitoStr)};
+  border: 1px solid ${esitoBorder(esitoStr)};
+  border-left: 4px solid ${esitoColor(esitoStr)};
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+.conclusione-box h3 { margin: 0 0 4px 0; color: ${esitoColor(esitoStr)}; font-size: 10pt; }
+.conclusione-box p  { margin: 0; font-size: 10pt; color: #1d2733; }
 
-/* Copertura box */
-.copertura-note { background-color:#fffbeb; border:1px solid #fcd34d; padding:8px 12px; font-size:9.5pt; color:#78350f; margin-bottom:12px; }
+/* Box commento copertura */
+.copertura-note {
+  background-color: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #d97706;
+  padding: 8px 12px;
+  font-size: 9.5pt;
+  color: #78350f;
+  margin-bottom: 12px;
+}
 
 /* Footer */
-.footer { margin:20px 32px 0 32px; border-top:1px solid #e2e8f0; padding:10px 0 20px 0; font-size:8.5pt; color:#94a3b8; }
+.footer {
+  border-top: 1px solid #e2e8f0;
+  margin: 16px 32px 0;
+  padding: 8px 0 20px;
+  font-size: 8pt;
+  color: #9ca3af;
+}
 </style>
 </head>
 <body>
-<div class="page">
 
 <!-- HEADER -->
 <div class="doc-header">
@@ -197,45 +295,42 @@ td { padding:5px 10px; border:1px solid #cbd5e1; vertical-align:top; font-size:1
 
 <!-- META BAR -->
 <div class="meta-bar">
-  <div class="meta-cell"><strong>Societ&agrave;:</strong> ${esc(company)}</div>
-  <div class="meta-cell"><strong>P. IVA:</strong> ${esc(piva)}</div>
-  <div class="meta-cell"><strong>Anno KPI:</strong> ${annoKpi}</div>
-  <div class="meta-cell"><strong>Residuo GSE:</strong> &euro; ${fmt(residuo)}</div>
-  <div class="meta-cell"><strong>Esito:</strong> <span class="esito-badge">${esitoStr}</span></div>
-  <div class="meta-cell" style="font-size:8.5pt;color:#94a3b8">Generato il ${generatedDate}</div>
+  <div class="meta-cell"><strong>Societ&agrave;:</strong>&nbsp;${esc(company)}</div>
+  <div class="meta-cell"><strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}</div>
+  <div class="meta-cell"><strong>Anno KPI:</strong>&nbsp;${annoKpi}</div>
+  <div class="meta-cell"><strong>Residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}</div>
+  <div class="meta-cell"><strong>Esito:</strong>&nbsp;<span class="esito-badge">${esitoStr}</span></div>
+  <div class="meta-cell" style="margin-left:auto;color:#94a3b8;font-size:8pt">Generato il ${generatedDate}</div>
 </div>
 
 <div class="content">
 
-<!-- SEZIONE 1: NARRATIVA -->
+<!-- 1. NARRATIVA -->
 <h2>1 &mdash; Nota sintetica di esito</h2>
 
 <div class="narrative-box">
   <h3>&#128200; Analisi Ricavi e Utile</h3>
   <p>${esc(narrative.analisiRicavi ?? '')}</p>
 </div>
-
 <div class="narrative-box">
   <h3>&#128178; Analisi della liquidit&agrave;</h3>
   <p>${esc(narrative.analisiLiquidita ?? '')}</p>
 </div>
-
 <div class="narrative-box">
   <h3>&#128203; Accantonamenti e rilievi extraprofitti</h3>
   <p>${esc(narrative.accantonamenti ?? '')}</p>
 </div>
-
 <div class="conclusione-box">
   <h3>&#9654; Conclusione &mdash; Esito: ${esitoStr}</h3>
   <p>${esc(narrative.conclusione ?? '')}</p>
 </div>
 
-<!-- SEZIONE 2: BILANCI -->
+<!-- 2. BILANCI -->
 <h2>2 &mdash; Sintesi bilanci &ndash; Ultimi ${years.length} esercizi</h2>
-<table width="100%">
+<table>
 <thead><tr>
-<th style="width:45%">Voce di bilancio</th>
-${yearHeaders}
+  <th style="width:45%">Voce di bilancio</th>
+  ${yearHeaders}
 </tr></thead>
 <tbody>
 ${bilRow('Ricavi (valore produzione)', 'ricavi')}
@@ -259,26 +354,30 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </tbody>
 </table>
 
-<!-- SEZIONE 3: KPI -->
+<!-- 3. KPI -->
 <h2>3 &mdash; KPI sintetici &ndash; Anno ${annoKpi}</h2>
-<p class="muted">I valori sono calcolati con formule deterministiche dai dati estratti. Il colore indica la soglia di riferimento: <span style="color:#166534;font-weight:bold">&#9632; positivo</span> &nbsp; <span style="color:#92400e;font-weight:bold">&#9632; attenzione</span> &nbsp; <span style="color:#991b1b;font-weight:bold">&#9632; critico</span></p>
-<table width="100%">
+<p class="muted">Calcolati con formule deterministiche.
+  <span style="color:#166534;font-weight:bold">&#9632; positivo</span>&nbsp;
+  <span style="color:#92400e;font-weight:bold">&#9632; attenzione</span>&nbsp;
+  <span style="color:#991b1b;font-weight:bold">&#9632; critico</span>
+</p>
+<table>
 <thead><tr>
-<th style="width:26%">Indice</th>
-<th style="width:52%">Formula</th>
-<th style="width:22%;text-align:right">Valore</th>
+  <th style="width:26%">Indice</th>
+  <th style="width:52%">Formula</th>
+  <th style="width:22%;text-align:right">Valore</th>
 </tr></thead>
 <tbody>${kpiTableRows}</tbody>
 </table>
 
-<!-- SEZIONE 4: COPERTURA GSE -->
+<!-- 4. COPERTURA -->
 <h2>4 &mdash; Residuo GSE e indici di copertura</h2>
-<p><strong>Importo residuo GSE:</strong> &euro; ${fmt(residuo)} &nbsp;&nbsp; <strong>Fonte:</strong> PDF allegato &nbsp;&nbsp; <strong>P. IVA:</strong> ${esc(piva)}</p>
-<table width="100%">
+<p><strong>Importo residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}&emsp;<strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}&emsp;<strong>Fonte:</strong>&nbsp;PDF allegato</p>
+<table>
 <thead><tr>
-<th style="width:36%">Indice di copertura</th>
-<th style="width:38%">Calcolo</th>
-<th style="width:26%;text-align:right">Valore</th>
+  <th style="width:36%">Indice di copertura</th>
+  <th style="width:38%">Calcolo</th>
+  <th style="width:26%;text-align:right">Valore</th>
 </tr></thead>
 <tbody>
 <tr style="background-color:#ffffff">
@@ -300,13 +399,13 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </table>
 <div class="copertura-note">${esc(narrative.commentoCopertura ?? '')}</div>
 
-<!-- CHECKLIST GSE -->
+<!-- 5. CHECKLIST -->
 <h2>5 &mdash; Checklist GSE ed extraprofitti</h2>
-<table width="100%">
+<table>
 <thead><tr>
-<th style="width:40%">Voce verificata</th>
-<th style="width:16%">Esito</th>
-<th style="width:44%">Dettaglio riscontrato</th>
+  <th style="width:40%">Voce verificata</th>
+  <th style="width:16%">Esito</th>
+  <th style="width:44%">Dettaglio riscontrato</th>
 </tr></thead>
 <tbody>
 ${checkRow('Debiti iscritti verso GSE nello SP', checklist.debitiGSE)}
@@ -323,7 +422,6 @@ ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
   Aprire con Microsoft Word e salvare come .docx per la versione editabile. &mdash; ${generatedDate}
 </div>
 
-</div><!-- /page -->
 </body>
 </html>`;
 };
@@ -336,9 +434,9 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
 
   const handleDownloadDocx = () => {
     const blob = new Blob([htmlContent], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = `GSE_Report_${company}.doc`;
     a.click();
     URL.revokeObjectURL(url);
@@ -346,16 +444,16 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
 
   const handleDownloadHtml = () => {
     const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = `GSE_Report_${company}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const esitoStr = narrativeData.esito ?? 'CAUTELA';
-  const badgeBg = esitoStr === 'SOSTENIBILE' ? '#dcfce7' : esitoStr === 'RISCHIO ELEVATO' ? '#fee2e2' : '#fef3c7';
+  const esitoStr   = narrativeData.esito ?? 'CAUTELA';
+  const badgeBg    = esitoStr === 'SOSTENIBILE' ? '#dcfce7' : esitoStr === 'RISCHIO ELEVATO' ? '#fee2e2' : '#fef3c7';
   const badgeColor = esitoColor(esitoStr);
 
   return (
@@ -363,11 +461,11 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
       {/* Toolbar */}
       <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+          <div className="w-8 h-8 bg-blue-700 rounded-lg flex items-center justify-center flex-shrink-0">
             <FileText className="w-4 h-4 text-white" />
           </div>
           <div>
-            <div className="font-semibold text-slate-800 text-sm">
+            <div className="font-semibold text-slate-800 text-sm leading-tight">
               Report GSE &mdash; {String(extractedData.companyName?.value ?? 'N.D.')}
             </div>
             <div className="text-xs text-slate-400">P.IVA {String(extractedData.vatNumber?.value ?? 'N.D.')}</div>
