@@ -60,62 +60,98 @@ function cleanRawText(raw: string, maxLen = 60): string {
   return s;
 }
 
-async function findBboxByText(
+// ---------------------------------------------------------------------------
+// Cerca UN singolo segmento di testo nel PDF e ritorna il suo bbox
+// ---------------------------------------------------------------------------
+async function findSingleBbox(
+  items: PdfTextItem[],
+  segment: string,
+): Promise<{ x0: number; y0: number; x1: number; y1: number } | null> {
+  const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!seg) return null;
+
+  // Strategia 1: match esatto
+  const exact = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg);
+  if (exact) {
+    const tf = exact.transform;
+    return { x0: tf[4], y0: tf[5], x1: tf[4] + exact.width, y1: tf[5] + exact.height };
+  }
+
+  // Strategia 2: keyword match (solo lettere >= 3 char, prime 5)
+  const keywords = seg
+    .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3)
+    .slice(0, 5);
+
+  if (keywords.length > 0) {
+    const threshold = Math.max(1, Math.ceil(keywords.length / 2));
+    let bestItem: PdfTextItem | null = null;
+    let bestCount = 0;
+    for (const item of items) {
+      const txt   = item.str.toLowerCase();
+      const count = keywords.filter(w => txt.includes(w)).length;
+      if (count >= threshold && count > bestCount) {
+        bestItem  = item;
+        bestCount = count;
+      }
+    }
+    if (bestItem) {
+      const tf = bestItem.transform;
+      return { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height };
+    }
+    // Strategia 3: fallback prima keyword
+    const fallback = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
+    if (fallback) {
+      const tf = fallback.transform;
+      return { x0: tf[4], y0: tf[5], x1: tf[4] + fallback.width, y1: tf[5] + fallback.height };
+    }
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Cerca TUTTI i segmenti separati da "+" nel rawText.
+// Es. "Erario c/IRES + IRAP + ritenute 56.797"
+//   → cerca "Erario c/IRES", "IRAP", "ritenute 56.797" separatamente
+// Ritorna un array di bbox (uno per segmento trovato, anche parziale).
+// ---------------------------------------------------------------------------
+async function findMultiBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   rawText: string,
-): Promise<{ x0: number; y0: number; x1: number; y1: number } | null> {
+): Promise<Array<{ x0: number; y0: number; x1: number; y1: number }>> {
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
 
-    // Strategia 1: match esatto su stringa intera (normalizzata)
-    const normalizedQuery = rawText.toLowerCase().replace(/\s+/g, ' ').trim();
-    const exactMatch = items.find(it =>
-      it.str.toLowerCase().replace(/\s+/g, ' ').trim() === normalizedQuery
-    );
-    if (exactMatch) {
-      const tf = exactMatch.transform;
-      return { x0: tf[4], y0: tf[5], x1: tf[4] + exactMatch.width, y1: tf[5] + exactMatch.height };
+    // Splitta sul separatore "+" (con spazi opzionali attorno)
+    const segments = rawText
+      .split(/\s*\+\s*/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    // Se c'è un solo segmento (nessun +), comportamento identico al vecchio
+    if (segments.length <= 1) {
+      const bbox = await findSingleBbox(items, rawText);
+      return bbox ? [bbox] : [];
     }
 
-    // Strategia 2: parole chiave (solo lettere, lunghezza >= 3, prime 5)
-    const keywords = rawText
-      .toLowerCase()
-      .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length >= 3)
-      .slice(0, 5);
-
-    if (keywords.length > 0) {
-      // cerca item che contiene almeno ceil(keywords.length/2) keyword
-      const threshold = Math.max(1, Math.ceil(keywords.length / 2));
-      let bestItem: PdfTextItem | null = null;
-      let bestCount = 0;
-      for (const item of items) {
-        const txt = item.str.toLowerCase();
-        const count = keywords.filter(w => txt.includes(w)).length;
-        if (count >= threshold && count > bestCount) {
-          bestItem = item;
-          bestCount = count;
-        }
-      }
-      if (bestItem) {
-        const tf = bestItem.transform;
-        return { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height };
-      }
-      // Strategia 3: fallback prima keyword
-      const fallback = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
-      if (fallback) {
-        const tf = fallback.transform;
-        return { x0: tf[4], y0: tf[5], x1: tf[4] + fallback.width, y1: tf[5] + fallback.height };
+    // Cerca ogni segmento separatamente; raccoglie quelli trovati
+    const results: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
+    for (const seg of segments) {
+      const bbox = await findSingleBbox(items, seg);
+      if (bbox) {
+        // Evita duplicati (stessa riga già catturata da un segmento precedente)
+        const isDup = results.some(r => Math.abs(r.y0 - bbox.y0) < 2 && Math.abs(r.x0 - bbox.x0) < 2);
+        if (!isDup) results.push(bbox);
       }
     }
-
-    return null;
+    return results;
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -181,22 +217,34 @@ const NumericInput: React.FC<NumericInputProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// PdfViewer — logica di navigazione completamente riscritta
-//
-// Principi:
-//  - Un'unica funzione imperativa `doRender(page, highlight)` che fa tutto
-//  - `renderSeqRef` annulla render in corso se ne arriva uno più recente
-//  - `highlightRef` sempre aggiornata (niente closure stale)
-//  - `currentPageRef` sempre aggiornata (niente closure stale)
-//  - Nessun useEffect con dipendenze [highlight] o [renderPage]: tutto
-//    viene triggerato esplicitamente tramite `requestRender()`
+// Colori per highlight multipli (uno per segmento)
 // ---------------------------------------------------------------------------
+const MULTI_HIGHLIGHT_COLORS = [
+  { fill: 'rgba(59,130,246,0.30)',  stroke: 'rgba(59,130,246,0.85)'  }, // blue
+  { fill: 'rgba(16,185,129,0.30)',  stroke: 'rgba(16,185,129,0.85)'  }, // emerald
+  { fill: 'rgba(245,158,11,0.30)',  stroke: 'rgba(245,158,11,0.85)'  }, // amber
+  { fill: 'rgba(239,68,68,0.30)',   stroke: 'rgba(239,68,68,0.85)'   }, // red
+  { fill: 'rgba(168,85,247,0.30)',  stroke: 'rgba(168,85,247,0.85)'  }, // violet
+];
+
+// ---------------------------------------------------------------------------
+// ActiveHighlight — bbox è ora un array per supportare multi-highlight
+// ---------------------------------------------------------------------------
+interface BBox { x0: number; y0: number; x1: number; y1: number; }
+
 interface ActiveHighlight {
   page: number;
-  bbox: { x0: number; y0: number; x1: number; y1: number };
-  color: string;
+  bboxes: BBox[];   // array: uno o più rettangoli da disegnare
+  color: string;    // colore "base" per la status bar in basso
 }
 
+// Bbox vuoto sentinel (solo navigazione, nessun disegno)
+const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
+function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
+
+// ---------------------------------------------------------------------------
+// PdfViewer
+// ---------------------------------------------------------------------------
 interface PdfViewerProps {
   file: File;
   highlight: ActiveHighlight | null;
@@ -205,18 +253,15 @@ interface PdfViewerProps {
 const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages,  setTotalPages]  = useState(1);
-  const canvasRef       = useRef<HTMLCanvasElement>(null);
-  const pdfDocRef       = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  // ref sempre aggiornate — usate dentro doRender per evitare closure stale
-  const currentPageRef  = useRef(1);
-  const highlightRef    = useRef<ActiveHighlight | null>(null);
-  const renderSeqRef    = useRef(0); // incrementato ad ogni richiesta render
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const pdfDocRef      = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  const currentPageRef = useRef(1);
+  const highlightRef   = useRef<ActiveHighlight | null>(null);
+  const renderSeqRef   = useRef(0);
 
-  // Mantieni le ref sincronizzate con lo state/prop
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
 
-  // Funzione imperativa — legge sempre dalle ref (mai da closure)
   const doRender = useCallback(async (seq: number) => {
     const pdf    = pdfDocRef.current;
     const canvas = canvasRef.current;
@@ -225,7 +270,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (!pdf || !canvas) return;
 
     const pdfPage  = await pdf.getPage(page);
-    if (seq !== renderSeqRef.current) return; // render annullato
+    if (seq !== renderSeqRef.current) return;
 
     const viewport = pdfPage.getViewport({ scale: 1.5 });
     canvas.width   = viewport.width;
@@ -233,45 +278,41 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
     const ctx = canvas.getContext('2d')!;
     await pdfPage.render({ canvasContext: ctx, viewport }).promise;
-    if (seq !== renderSeqRef.current) return; // render annullato dopo il PDF
+    if (seq !== renderSeqRef.current) return;
 
-    // Disegna highlight sopra il PDF
-    if (hl && hl.page === page) {
-      const { x0, y0, x1, y1 } = hl.bbox;
-      if (!(x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0)) {
-        const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
-        const [bx, by] = viewport.convertToViewportPoint(x1, y0);
+    // Disegna tutti i bbox dell'highlight corrente
+    if (hl && hl.page === page && hl.bboxes.length > 0) {
+      hl.bboxes.forEach((bbox, idx) => {
+        if (isBboxEmpty(bbox)) return;
+        const colors = MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length];
+        const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
+        const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
         const rx = Math.min(ax, bx);
         const ry = Math.min(ay, by);
         const rw = Math.abs(bx - ax);
         const rh = Math.abs(by - ay);
         ctx.save();
-        ctx.globalAlpha = 0.35;
-        ctx.fillStyle   = hl.color.replace(/,[\d.]+\)$/, ',1)');
+        ctx.fillStyle   = colors.fill;
         ctx.fillRect(rx, ry, rw, rh);
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = hl.color.replace(/,[\d.]+\)$/, ',0.9)');
+        ctx.strokeStyle = colors.stroke;
         ctx.lineWidth   = 2;
         ctx.strokeRect(rx, ry, rw, rh);
         ctx.restore();
-      }
+      });
     }
-  }, []); // nessuna dipendenza: legge tutto dalle ref
+  }, []);
 
-  // Incrementa il numero di sequenza e avvia un nuovo render
   const requestRender = useCallback(() => {
     const seq = ++renderSeqRef.current;
     doRender(seq);
   }, [doRender]);
 
-  // Naviga a una pagina (aggiorna state + ref + render)
   const goToPage = useCallback((page: number) => {
     currentPageRef.current = page;
     setCurrentPage(page);
     requestRender();
   }, [requestRender]);
 
-  // Caricamento file
   useEffect(() => {
     pdfDocRef.current = null;
     currentPageRef.current = 1;
@@ -288,20 +329,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       requestRender();
     })();
     return () => { cancelled = true; };
-  }, [file]); // requestRender stabile, ok ometterlo qui
+  }, [file]);
 
-  // Quando arriva un nuovo highlight dall'esterno:
-  // - se serve cambiare pagina, aggiorna la ref + state + render
-  // - altrimenti ri-renderizza solo (per aggiornare/rimuovere il box)
   useEffect(() => {
     highlightRef.current = highlight;
     if (highlight?.page && highlight.page !== currentPageRef.current) {
       currentPageRef.current = highlight.page;
       setCurrentPage(highlight.page);
     }
-    // requestRender legge highlight dalla ref aggiornata
     requestRender();
-  }, [highlight]); // requestRender stabile
+  }, [highlight]);
+
+  const highlightCount = highlight?.bboxes.filter(b => !isBboxEmpty(b)).length ?? 0;
 
   return (
     <>
@@ -326,11 +365,19 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           <canvas ref={canvasRef} className="block" />
         </div>
       </div>
-      {highlight && (
-        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
-          <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-            style={{ backgroundColor: highlight.color.replace(/,[\d.]+\)$/, ',0.7)') }} />
-          <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
+      {highlight && highlightCount > 0 && (
+        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2 flex-wrap">
+          {Array.from({ length: highlightCount }).map((_, idx) => (
+            <span key={idx} className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length].stroke }}
+              />
+              <span className="text-xs text-slate-500">
+                {highlightCount > 1 ? `Voce ${idx + 1}` : 'Testo evidenziato'} · pag. {highlight.page}
+              </span>
+            </span>
+          ))}
         </div>
       )}
     </>
@@ -407,30 +454,32 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
-    // Caso 1: bbox già nota — navigazione immediata, nessun await
+    // Caso 1: bbox già nota (singola, dal JSON di estrazione)
     if (field?.bbox && field?.page) {
-      setActiveHighlight({ page: field.page, bbox: field.bbox, color });
+      setActiveHighlight({ page: field.page, bboxes: [field.bbox], color });
       return;
     }
 
-    // Caso 2: valore null (n.d.) — naviga alla pagina senza cercare bbox
+    // Caso 2: valore null (n.d.) — solo navigazione
     if (field?.page && field.value === null) {
-      setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
+      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
       return;
     }
 
-    // Caso 3: cerca il bbox tramite testo nel PDF
+    // Caso 3: cerca bbox tramite rawText (supporta somme con +)
     if (field?.page && field?.rawText && files[fileIdx]) {
-      // Imposta subito la pagina (bbox vuoto = solo navigazione, no highlight)
-      // così il viewer si sposta immediatamente senza aspettare la ricerca
-      setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
+      // Naviga immediatamente (nessun highlight ancora)
+      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
       try {
-        const doc  = await getPdfDoc(fileIdx, files[fileIdx]);
-        const bbox = await findBboxByText(doc, field.page, field.rawText);
-        // Aggiorna con il bbox trovato (o lascia senza box se non trovato)
-        setActiveHighlight({ page: field.page, bbox: bbox ?? { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
+        const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
+        const bboxes = await findMultiBboxByText(doc, field.page, field.rawText);
+        setActiveHighlight({
+          page: field.page,
+          bboxes: bboxes.length > 0 ? bboxes : [EMPTY_BBOX],
+          color,
+        });
       } catch {
-        // lascia il navigate-only già impostato sopra
+        // lascia navigate-only
       }
       return;
     }
@@ -534,6 +583,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   const hasBbox    = !!field?.bbox && !!field?.page;
                   const hasPage    = !!field?.page;
                   const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
+                  // Conta le voci nel rawText (presenza di "+")
+                  const multiCount = field?.rawText ? field.rawText.split('+').length : 1;
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -541,6 +592,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         {hasPage && (
                           <span className={`inline-flex items-center gap-0.5 text-[9px] font-medium ${badgeColor}`}>
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
+                          </span>
+                        )}
+                        {multiCount > 1 && (
+                          <span className="ml-1 text-[9px] font-semibold text-indigo-500 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5">
+                            \u03a3 {multiCount} voci
                           </span>
                         )}
                         {isUnavail && (
