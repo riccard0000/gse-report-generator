@@ -130,10 +130,10 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
   ],
 
   checklist: {
-    debitiGSE:       { presente: false, dettaglio: "Nessun debito verso GSE iscritto nello stato patrimoniale negli esercizi 2022-2024.", page: 0, sourceFileName: "" },
-    accantonamenti:  { presente: false, dettaglio: "Nessun accantonamento a fondo rischi collegato a extraprofitti o art. 15-bis D.L. 4/2022 rilevato nella nota integrativa.", page: 0, sourceFileName: "" },
-    riduzioniRicavi: { presente: false, dettaglio: "Nessuna riduzione di ricavi per effetto della normativa sugli extraprofitti rilevata nel conto economico.", page: 0, sourceFileName: "" },
-    contenziosi:     { presente: false, dettaglio: "Nessun contenzioso o ricorso al TAR contro GSE menzionato nella nota integrativa.", page: 0, sourceFileName: "" },
+    debitiGSE:       { presente: false, dettaglio: "Nessun debito verso GSE iscritto nello stato patrimoniale negli esercizi 2022-2024.", fonteTestuale: "Nessuna occorrenza trovata nel documento per debiti GSE.", page: 0, sourceFileName: "" },
+    accantonamenti:  { presente: false, dettaglio: "Nessun accantonamento a fondo rischi collegato a extraprofitti o art. 15-bis D.L. 4/2022 rilevato nella nota integrativa.", fonteTestuale: "Nessuna occorrenza trovata nel documento per accantonamenti extraprofitti.", page: 0, sourceFileName: "" },
+    riduzioniRicavi: { presente: false, dettaglio: "Nessuna riduzione di ricavi per effetto della normativa sugli extraprofitti rilevata nel conto economico.", fonteTestuale: "Nessuna occorrenza trovata nel documento per riduzioni ricavi extraprofitti.", page: 0, sourceFileName: "" },
+    contenziosi:     { presente: false, dettaglio: "Nessun contenzioso o ricorso al TAR contro GSE menzionato nella nota integrativa.", fonteTestuale: "Nessuna occorrenza trovata nel documento per contenziosi GSE o ricorsi TAR.", page: 0, sourceFileName: "" },
   },
 };
 
