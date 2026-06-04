@@ -61,6 +61,16 @@ function cleanRawText(raw: string, maxLen = 60): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tipo discriminato — unica fonte di verità per highlight E badge UI
+// ---------------------------------------------------------------------------
+interface BBox { x0: number; y0: number; x1: number; y1: number; }
+
+type MatchResult =
+  | { kind: 'single';    bboxes: [BBox] }
+  | { kind: 'formula';   bboxes: [BBox] }   // formula calcolata: no badge Σ, highlight singolo
+  | { kind: 'multi-sum'; bboxes: BBox[] };  // somma di righe:    badge Σ N voci, highlight multipli
+
+// ---------------------------------------------------------------------------
 // Determina se un rawText con "+" rappresenta una formula calcolata
 // (ogni segmento contiene almeno una cifra numerica) oppure una somma
 // di righe del bilancio (i segmenti sono nomi puri senza cifre).
@@ -69,7 +79,6 @@ function cleanRawText(raw: string, maxLen = 60): string {
 //     somma di righe:     "Erario c/IRES + IRAP + ritenute"
 // ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
-  // Se la maggioranza dei segmenti contiene una cifra -> formula calcolata
   const withDigits = segments.filter(s => /\d/.test(s)).length;
   return withDigits >= Math.ceil(segments.length / 2);
 }
@@ -80,7 +89,7 @@ function isCalculatedFormula(segments: string[]): boolean {
 async function findSingleBbox(
   items: PdfTextItem[],
   segment: string,
-): Promise<{ x0: number; y0: number; x1: number; y1: number } | null> {
+): Promise<BBox | null> {
   const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
@@ -91,7 +100,7 @@ async function findSingleBbox(
     return { x0: tf[4], y0: tf[5], x1: tf[4] + exact.width, y1: tf[5] + exact.height };
   }
 
-  // Strategia 2: keyword match (solo lettere >= 3 char, prime 5)
+  // Strategia 2: keyword match (sole lettere >= 3 char, prime 5)
   const keywords = seg
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
@@ -126,20 +135,14 @@ async function findSingleBbox(
 }
 
 // ---------------------------------------------------------------------------
-// Risultato della ricerca bbox: include anche il flag isFormula
-// per sapere se mostrare o meno il badge Sigma nell'UI
+// Cerca nel PDF e restituisce un MatchResult tipizzato
+// — sostituisce la vecchia MultiBboxResult + isFormula flag
 // ---------------------------------------------------------------------------
-interface MultiBboxResult {
-  bboxes: Array<{ x0: number; y0: number; x1: number; y1: number }>;
-  isFormula: boolean; // true = formula calcolata (non mostrare badge Sigma)
-}
-
-async function findMultiBboxByText(
+async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   rawText: string,
-): Promise<MultiBboxResult> {
-  const empty: MultiBboxResult = { bboxes: [], isFormula: false };
+): Promise<MatchResult | null> {
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
@@ -150,28 +153,24 @@ async function findMultiBboxByText(
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    // Nessun "+": ricerca singola, comportamento classico
+    // Nessun "+": ricerca singola
     if (segments.length <= 1) {
       const bbox = await findSingleBbox(items, rawText);
-      return { bboxes: bbox ? [bbox] : [], isFormula: false };
+      if (!bbox) return null;
+      return { kind: 'single', bboxes: [bbox] };
     }
 
-    const formula = isCalculatedFormula(segments);
-
-    if (formula) {
-      // Formula calcolata (es. EBIT + ammortamenti con cifre):
-      // cerca solo il PRIMO segmento come anchor principale
-      // (es. cerca "EBIT" nel PDF, ignorando la parte numerica)
+    if (isCalculatedFormula(segments)) {
+      // Formula calcolata: cerca solo il nome della voce (primo segmento, senza cifre)
       const firstSeg = segments[0];
-      // Rimuovi le cifre dal segmento per cercare solo il nome della voce
       const nameOnly = firstSeg.replace(/[\d.,]+/g, '').replace(/\s+/g, ' ').trim();
       const bbox = await findSingleBbox(items, nameOnly.length >= 3 ? nameOnly : firstSeg);
-      return { bboxes: bbox ? [bbox] : [], isFormula: true };
+      if (!bbox) return null;
+      return { kind: 'formula', bboxes: [bbox] };
     }
 
-    // Somma di righe (es. Erario c/IRES + IRAP + ritenute):
-    // cerca ogni segmento separatamente e restituisci tutti i bbox
-    const results: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
+    // Somma di righe: cerca ogni segmento separatamente
+    const results: BBox[] = [];
     for (const seg of segments) {
       const bbox = await findSingleBbox(items, seg);
       if (bbox) {
@@ -179,9 +178,10 @@ async function findMultiBboxByText(
         if (!isDup) results.push(bbox);
       }
     }
-    return { bboxes: results, isFormula: false };
+    if (results.length === 0) return null;
+    return { kind: 'multi-sum', bboxes: results };
   } catch {
-    return empty;
+    return null;
   }
 }
 
@@ -247,7 +247,7 @@ const NumericInput: React.FC<NumericInputProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Colori per highlight multipli
+// Colori per highlight multipli (multi-sum)
 // ---------------------------------------------------------------------------
 const MULTI_HIGHLIGHT_COLORS = [
   { fill: 'rgba(59,130,246,0.30)',  stroke: 'rgba(59,130,246,0.85)'  },
@@ -257,13 +257,11 @@ const MULTI_HIGHLIGHT_COLORS = [
   { fill: 'rgba(168,85,247,0.30)',  stroke: 'rgba(168,85,247,0.85)'  },
 ];
 
-interface BBox { x0: number; y0: number; x1: number; y1: number; }
-
 interface ActiveHighlight {
   page: number;
   bboxes: BBox[];
   color: string;
-  multiLabel?: boolean; // true = mostra legenda "Voce 1, Voce 2..."
+  isMultiSum: boolean; // true solo per multi-sum → mostra legenda "Voce 1, Voce 2..."
 }
 
 const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -310,7 +308,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (hl && hl.page === page && hl.bboxes.length > 0) {
       hl.bboxes.forEach((bbox, idx) => {
         if (isBboxEmpty(bbox)) return;
-        const colors = MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length];
+        // multi-sum → colori distinti per voce; single/formula → indice 0 sempre
+        const colorIdx = hl.isMultiSum ? idx : 0;
+        const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
         const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
         const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
         const rx = Math.min(ax, bx);
@@ -392,9 +392,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           {visibleBboxes.map((_, idx) => (
             <span key={idx} className="flex items-center gap-1">
               <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length].stroke }} />
+                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[
+                  (highlight?.isMultiSum ? idx : 0) % MULTI_HIGHLIGHT_COLORS.length
+                ].stroke }} />
               <span className="text-xs text-slate-500">
-                {highlight!.multiLabel ? `Voce ${idx + 1}` : 'Evidenziato'} &middot; pag. {highlight!.page}
+                {highlight?.isMultiSum ? `Voce ${idx + 1}` : 'Evidenziato'} &middot; pag. {highlight!.page}
               </span>
             </span>
           ))}
@@ -450,6 +452,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
 
+  // Cache del kind per ogni campo già risolto (key = "yearIdx:fieldKey")
+  // per evitare di ricalcolare il badge al secondo render
+  const matchKindCacheRef = useRef<Map<string, MatchResult['kind']>>(new Map());
+
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
 
@@ -470,25 +476,27 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
     if (field?.bbox && field?.page) {
-      setActiveHighlight({ page: field.page, bboxes: [field.bbox], color });
+      setActiveHighlight({ page: field.page, bboxes: [field.bbox], color, isMultiSum: false });
       return;
     }
 
     if (field?.page && field.value === null) {
-      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
+      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color, isMultiSum: false });
       return;
     }
 
     if (field?.page && field?.rawText && files[fileIdx]) {
-      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
+      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color, isMultiSum: false });
       try {
         const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-        const result = await findMultiBboxByText(doc, field.page, field.rawText);
+        const result = await findBboxByText(doc, field.page, field.rawText);
+        if (!result) return;
+        const isMultiSum = result.kind === 'multi-sum';
         setActiveHighlight({
-          page: field.page,
-          bboxes: result.bboxes.length > 0 ? result.bboxes : [EMPTY_BBOX],
+          page:      field.page,
+          bboxes:    result.bboxes,
           color,
-          multiLabel: !result.isFormula && result.bboxes.length > 1,
+          isMultiSum,
         });
       } catch {
         // lascia navigate-only
@@ -498,6 +506,22 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
     setActiveHighlight(null);
   }, [files, getPdfDoc]);
+
+  // -------------------------------------------------------------------------
+  // matchKind: determina in modo sincrono (solo da rawText, senza PDF)
+  // il kind atteso per il badge — formula non mostra mai Σ
+  // Questa è la stessa logica di isCalculatedFormula usata in findBboxByText
+  // per garantire coerenza senza dover aprire il PDF
+  // -------------------------------------------------------------------------
+  function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
+    if (!rawText) return 'single';
+    const segments = rawText
+      .split(/\s*\+\s*/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (segments.length <= 1) return 'single';
+    return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
+  }
 
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
     setData(prev => {
@@ -565,8 +589,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             const year    = data.yearsData[yearIdx];
             if (!year) return null;
 
-            // Pre-calcola quali campi sono somme di righe (non formule calcolate)
-            // per mostrare il badge Sigma solo dove ha senso
             return (
               <div className="space-y-3">
                 <p className="text-xs text-slate-500 mb-1">
@@ -590,18 +612,19 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 </div>
 
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field      = year[key] as ExtractedField<number>;
-                  const isUnavail  = field?.value === null && !!field?.rawText;
-                  const hasBbox    = !!field?.bbox && !!field?.page;
-                  const hasPage    = !!field?.page;
+                  const field     = year[key] as ExtractedField<number>;
+                  const isUnavail = field?.value === null && !!field?.rawText;
+                  const hasBbox   = !!field?.bbox && !!field?.page;
+                  const hasPage   = !!field?.page;
                   const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
 
-                  // Badge Sigma: mostralo solo se ci sono "+" E i segmenti
-                  // sono nomi puri senza cifre (= somma di righe, non formula)
-                  const rawSegments = field?.rawText
-                    ? field.rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(Boolean)
-                    : [];
-                  const showSigma = rawSegments.length > 1 && !isCalculatedFormula(rawSegments);
+                  // Badge Σ — usa kind come unica fonte di verità:
+                  // solo 'multi-sum' mostra il badge; 'formula' e 'single' no.
+                  const kind      = matchKindFromRawText(field?.rawText);
+                  const showSigma = kind === 'multi-sum';
+                  const numSegs   = field?.rawText
+                    ? field.rawText.split(/\s*\+\s*/).filter(Boolean).length
+                    : 0;
 
                   return (
                     <div key={key as string}>
@@ -614,7 +637,12 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         )}
                         {showSigma && (
                           <span className="ml-1 text-[9px] font-semibold text-indigo-500 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5">
-                            \u03a3 {rawSegments.length} voci
+                            \u03a3 {numSegs} voci
+                          </span>
+                        )}
+                        {!showSigma && kind === 'formula' && (
+                          <span className="ml-1 text-[9px] font-semibold text-teal-600 bg-teal-50 border border-teal-200 rounded px-1 py-0.5">
+                            f(x)
                           </span>
                         )}
                         {isUnavail && (
