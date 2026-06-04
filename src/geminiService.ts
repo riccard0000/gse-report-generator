@@ -1,9 +1,10 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, NarrativeData } from './types';
 import {
-  GITHUB_MODEL_EXTRACT,
-  GITHUB_MODEL_NARRATIVE,
-  GITHUB_MODELS_ENDPOINT,
+  OPENROUTER_MODEL_EXTRACT,
+  OPENROUTER_MODEL_NARRATIVE,
+  OPENROUTER_MODEL_FALLBACK,
+  OPENROUTER_ENDPOINT,
   EXTRACTION_PROMPT,
   NARRATIVE_PROMPT,
 } from './constants';
@@ -12,7 +13,6 @@ import { calculateKpis } from './kpiCalculator';
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// Tipo inline compatibile con pdfjs-dist v4 (TextItem non e esportato come named type)
 type PdfTextItem = { str: string; transform: number[] };
 
 const isPdfTextItem = (item: unknown): item is PdfTextItem =>
@@ -20,13 +20,6 @@ const isPdfTextItem = (item: unknown): item is PdfTextItem =>
   item !== null &&
   'str' in item &&
   'transform' in item;
-
-// ─── Chiave API da variabile d'ambiente Vite ────────────────────────────────
-const getApiKey = (): string => {
-  const key = import.meta.env.VITE_GITHUB_TOKEN as string;
-  if (!key) throw new Error('Variabile VITE_GITHUB_TOKEN non configurata.');
-  return key;
-};
 
 // ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y) ─
 const extractStructuredText = (items: PdfTextItem[]): string => {
@@ -58,7 +51,6 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    // Cast a unknown[] per permettere il type guard su tipo locale
     const textItems = (content.items as unknown[]).filter(isPdfTextItem);
     const pageText = extractStructuredText(textItems);
     fullText += `\n--- PAGINA ${pageNum} ---\n${pageText}\n`;
@@ -66,23 +58,26 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   return fullText;
 };
 
-// ─── Chiamata centralizzata all'API OpenRouter ──────────────────────────────
-const callOpenRouter = async (
+// ─── Chiamata singola al proxy Cloudflare Worker ───────────────────────────
+const callModel = async (
   model: string,
   messages: object[],
   onProgress?: (msg: string) => void
 ): Promise<string> => {
-  const apiKey = getApiKey();
-  onProgress?.('Chiamata AI in corso...');
+  const proxyUrl = OPENROUTER_ENDPOINT;
+  if (!proxyUrl) {
+    throw new Error(
+      'VITE_PROXY_URL non configurata. ' +
+      'In locale: copia .env.example in .env e imposta VITE_PROXY_URL=http://localhost:8787. ' +
+      'In produzione: aggiungi VITE_PROXY_URL nei secret di GitHub Actions.'
+    );
+  }
 
-  const response = await fetch(`${GITHUB_MODELS_ENDPOINT}/chat/completions`, {
+  onProgress?.(`Chiamata AI (${model.split('/').pop()})...`);
+
+  const response = await fetch(proxyUrl, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'GSE Report Generator',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
       messages,
@@ -104,6 +99,29 @@ const callOpenRouter = async (
   return data.choices?.[0]?.message?.content ?? '';
 };
 
+// ─── Chiamata con fallback automatico ─────────────────────────────────────
+// Se il modello primario restituisce 429/503 (rate limit / overload)
+// riprova automaticamente con OPENROUTER_MODEL_FALLBACK.
+const callOpenRouter = async (
+  model: string,
+  messages: object[],
+  onProgress?: (msg: string) => void
+): Promise<string> => {
+  try {
+    return await callModel(model, messages, onProgress);
+  } catch (err) {
+    const isRetryable =
+      err instanceof Error &&
+      (err.message.includes('429') || err.message.includes('503') || err.message.includes('overload'));
+
+    if (isRetryable && model !== OPENROUTER_MODEL_FALLBACK) {
+      onProgress?.(`Modello primario non disponibile, uso fallback (${OPENROUTER_MODEL_FALLBACK.split('/').pop()})...`);
+      return await callModel(OPENROUTER_MODEL_FALLBACK, messages, onProgress);
+    }
+    throw err;
+  }
+};
+
 // ─── Export: Estrazione dati dai PDF ──────────────────────────────────────
 export const extractDataFromPdfs = async (
   files: File[],
@@ -120,7 +138,7 @@ export const extractDataFromPdfs = async (
 
   onProgress?.('Analisi AI — estrazione dati strutturati...');
   const text = await callOpenRouter(
-    GITHUB_MODEL_EXTRACT,
+    OPENROUTER_MODEL_EXTRACT,
     [
       { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
       { role: 'user', content: `${EXTRACTION_PROMPT}\n\n${docTexts.join('\n\n')}` },
@@ -149,7 +167,7 @@ export const generateNarrative = async (
   onProgress?.('Generazione narrativa tecnica (seconda chiamata AI)...');
 
   const text = await callOpenRouter(
-    GITHUB_MODEL_NARRATIVE,
+    OPENROUTER_MODEL_NARRATIVE,
     [
       {
         role: 'system',

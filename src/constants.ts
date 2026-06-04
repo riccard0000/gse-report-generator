@@ -2,14 +2,19 @@
  * Costanti di configurazione per il GSE Report Generator
  */
 
-// Modello usato per l'estrazione dati strutturati dai PDF
-export const GITHUB_MODEL_EXTRACT = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+// ─── Modelli OpenRouter (tutti :free) ─────────────────────────────────────
+// Estrazione KPI: Gemma 4 31B — quality score 65, context 262K, JSON tools
+export const OPENROUTER_MODEL_EXTRACT = 'google/gemma-4-31b-it:free';
 
-// Modello usato per la generazione della narrativa tecnica
-export const GITHUB_MODEL_NARRATIVE = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+// Narrativa tecnica: Nemotron Super 120B — 1M context, testo italiano fluido
+export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
 
-// Endpoint OpenRouter (la chiave è in VITE_GITHUB_TOKEN iniettata da GitHub Actions)
-export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1';
+// Fallback automatico se il modello primario è sovraccarico o non disponibile
+export const OPENROUTER_MODEL_FALLBACK = 'openai/gpt-oss-120b:free';
+
+// Endpoint OpenRouter — la chiave API è gestita SOLO dal Cloudflare Worker
+// Il frontend chiama VITE_PROXY_URL, mai OpenRouter direttamente
+export const OPENROUTER_ENDPOINT = import.meta.env.VITE_PROXY_URL as string;
 
 /**
  * Prompt per l'estrazione dati dai PDF.
