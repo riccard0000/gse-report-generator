@@ -4,7 +4,7 @@ import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
 import { DataVerification } from './components/DataVerification';
 import { ExtractedData, NarrativeData } from './types';
-import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES } from './mockData';
+import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, MOCK_PDF_URLS } from './mockData';
 import { Zap, AlertTriangle, FlaskConical } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
@@ -39,19 +39,36 @@ export default function App() {
   }, [files]);
 
   /**
-   * DEMO MODE: carica i dati mock reali (GEOSOL 2022-2024)
-   * senza chiamare OpenRouter. I file PDF devono essere caricati
-   * dall'utente per poter visualizzare i documenti nel PDF viewer.
+   * DEMO MODE:
+   * 1. Fetcha i 3 PDF statici dalla root del sito (pubblici, Vite li serve)
+   * 2. Li converte in oggetti File sintetici
+   * 3. Carica MOCK_EXTRACTED_DATA senza chiamare OpenRouter
+   * Il viewer PDF funziona esattamente come con file caricati dall'utente.
    */
   const handleLoadDemo = useCallback(async () => {
     setError(null);
     setIsDemoMode(true);
-    setExtractedData(MOCK_EXTRACTED_DATA);
-    setNarrativeData(null);
-    setAppState('verifying');
+    setAppState('extracting');
+    setProgress('Caricamento PDF di esempio...');
 
-    // Se l'utente ha già caricato i file PDF corretti, vengono usati;
-    // altrimenti il PDF viewer mostrerà la pagina vuota ma la form funzionerà.
+    try {
+      const demoFiles = await Promise.all(
+        MOCK_PDF_URLS.map(async (url, i) => {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`PDF demo non trovato: ${url}`);
+          const blob = await res.blob();
+          return new File([blob], MOCK_FILE_NAMES[i], { type: 'application/pdf' });
+        })
+      );
+      setFiles(demoFiles);
+      setExtractedData(MOCK_EXTRACTED_DATA);
+      setAppState('verifying');
+      setProgress('');
+    } catch (e: any) {
+      setError(e.message || 'Errore nel caricamento dei PDF demo');
+      setAppState('error');
+      setIsDemoMode(false);
+    }
   }, []);
 
   const handleReset = () => {
@@ -138,7 +155,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className="mt-4 flex flex-col gap-3">
-                  {/* Bottone principale: analisi reale */}
+                  {/* Bottone principale */}
                   <button
                     onClick={handleAnalyze}
                     disabled={files.length !== REQUIRED_FILES}
@@ -149,7 +166,6 @@ export default function App() {
                       : `Carica ${REQUIRED_FILES} bilanci per continuare`}
                   </button>
 
-                  {/* Separatore */}
                   <div className="flex items-center gap-3">
                     <div className="flex-1 h-px bg-slate-200" />
                     <span className="text-xs text-slate-400">oppure</span>
@@ -165,13 +181,7 @@ export default function App() {
                     Usa dati di esempio (GEOSOL 2022-2024)
                   </button>
                   <p className="text-xs text-slate-400 text-center -mt-1">
-                    Bypassa OpenRouter e carica dati reali già estratti dai 3 bilanci.
-                    {files.length === REQUIRED_FILES && (
-                      <span className="text-green-600 font-medium"> I PDF caricati saranno usati per la visualizzazione con highlight.</span>
-                    )}
-                    {files.length !== REQUIRED_FILES && (
-                      <span> Per attivare l’highlight nel PDF viewer, carica prima i 3 file PDF.</span>
-                    )}
+                    Carica automaticamente i 3 PDF e i dati estratti — nessuna chiave API necessaria.
                   </p>
                 </div>
               )}
