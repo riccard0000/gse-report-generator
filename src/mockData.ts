@@ -6,20 +6,29 @@
 
 import { ExtractedData } from './types';
 
-// Nomi file come caricati dall'utente (con trattini, come nei PDF originali)
+// Nomi file come caricati dall'utente
 export const MOCK_FILE_NAMES = [
   'OUT_LASTBIL_IC01637000892-2022-GEOSOL.pdf',
   'OUT_LASTBIL_IC01637000892-2023-GEOSOL.pdf',
   'OUT_LASTBIL_IC01637000892-2024-GEOSOL.pdf',
 ];
 
-// URL statici dei PDF nella root del repo (Vite li serve da /)
-// I file sono stati caricati con spazi nel nome → URL-encoded
-export const MOCK_PDF_URLS = [
-  '/OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
-  '/OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
-  '/OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf',
+// Nomi fisici dei file nel repo (con spazi, URL-encoded)
+const PDF_FILENAMES = [
+  'OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
+  'OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
+  'OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf',
 ];
+
+/**
+ * Restituisce gli URL corretti per il deploy corrente.
+ * import.meta.env.BASE_URL = "/gse-report-generator/" in prod, "/" in dev.
+ * I PDF sono nella root del repo → Vite li copia in dist/ → serviti sotto BASE_URL.
+ */
+export function getMockPdfUrls(): string[] {
+  const base = import.meta.env.BASE_URL; // termina sempre con "/"
+  return PDF_FILENAMES.map((f) => `${base}${f}`);
+}
 
 export const MOCK_EXTRACTED_DATA: ExtractedData = {
   companyName: {
