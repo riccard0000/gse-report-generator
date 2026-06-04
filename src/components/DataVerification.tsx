@@ -61,6 +61,20 @@ function cleanRawText(raw: string, maxLen = 60): string {
 }
 
 // ---------------------------------------------------------------------------
+// Determina se un rawText con "+" rappresenta una formula calcolata
+// (ogni segmento contiene almeno una cifra numerica) oppure una somma
+// di righe del bilancio (i segmenti sono nomi puri senza cifre).
+//
+// Es. formula calcolata:  "EBIT 160.638 + ammortamenti 145.786"
+//     somma di righe:     "Erario c/IRES + IRAP + ritenute"
+// ---------------------------------------------------------------------------
+function isCalculatedFormula(segments: string[]): boolean {
+  // Se la maggioranza dei segmenti contiene una cifra -> formula calcolata
+  const withDigits = segments.filter(s => /\d/.test(s)).length;
+  return withDigits >= Math.ceil(segments.length / 2);
+}
+
+// ---------------------------------------------------------------------------
 // Cerca UN singolo segmento di testo nel PDF e ritorna il suo bbox
 // ---------------------------------------------------------------------------
 async function findSingleBbox(
@@ -112,46 +126,62 @@ async function findSingleBbox(
 }
 
 // ---------------------------------------------------------------------------
-// Cerca TUTTI i segmenti separati da "+" nel rawText.
-// Es. "Erario c/IRES + IRAP + ritenute 56.797"
-//   → cerca "Erario c/IRES", "IRAP", "ritenute 56.797" separatamente
-// Ritorna un array di bbox (uno per segmento trovato, anche parziale).
+// Risultato della ricerca bbox: include anche il flag isFormula
+// per sapere se mostrare o meno il badge Sigma nell'UI
 // ---------------------------------------------------------------------------
+interface MultiBboxResult {
+  bboxes: Array<{ x0: number; y0: number; x1: number; y1: number }>;
+  isFormula: boolean; // true = formula calcolata (non mostrare badge Sigma)
+}
+
 async function findMultiBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   rawText: string,
-): Promise<Array<{ x0: number; y0: number; x1: number; y1: number }>> {
+): Promise<MultiBboxResult> {
+  const empty: MultiBboxResult = { bboxes: [], isFormula: false };
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
 
-    // Splitta sul separatore "+" (con spazi opzionali attorno)
     const segments = rawText
       .split(/\s*\+\s*/)
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    // Se c'è un solo segmento (nessun +), comportamento identico al vecchio
+    // Nessun "+": ricerca singola, comportamento classico
     if (segments.length <= 1) {
       const bbox = await findSingleBbox(items, rawText);
-      return bbox ? [bbox] : [];
+      return { bboxes: bbox ? [bbox] : [], isFormula: false };
     }
 
-    // Cerca ogni segmento separatamente; raccoglie quelli trovati
+    const formula = isCalculatedFormula(segments);
+
+    if (formula) {
+      // Formula calcolata (es. EBIT + ammortamenti con cifre):
+      // cerca solo il PRIMO segmento come anchor principale
+      // (es. cerca "EBIT" nel PDF, ignorando la parte numerica)
+      const firstSeg = segments[0];
+      // Rimuovi le cifre dal segmento per cercare solo il nome della voce
+      const nameOnly = firstSeg.replace(/[\d.,]+/g, '').replace(/\s+/g, ' ').trim();
+      const bbox = await findSingleBbox(items, nameOnly.length >= 3 ? nameOnly : firstSeg);
+      return { bboxes: bbox ? [bbox] : [], isFormula: true };
+    }
+
+    // Somma di righe (es. Erario c/IRES + IRAP + ritenute):
+    // cerca ogni segmento separatamente e restituisci tutti i bbox
     const results: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
     for (const seg of segments) {
       const bbox = await findSingleBbox(items, seg);
       if (bbox) {
-        // Evita duplicati (stessa riga già catturata da un segmento precedente)
         const isDup = results.some(r => Math.abs(r.y0 - bbox.y0) < 2 && Math.abs(r.x0 - bbox.x0) < 2);
         if (!isDup) results.push(bbox);
       }
     }
-    return results;
+    return { bboxes: results, isFormula: false };
   } catch {
-    return [];
+    return empty;
   }
 }
 
@@ -217,28 +247,25 @@ const NumericInput: React.FC<NumericInputProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Colori per highlight multipli (uno per segmento)
+// Colori per highlight multipli
 // ---------------------------------------------------------------------------
 const MULTI_HIGHLIGHT_COLORS = [
-  { fill: 'rgba(59,130,246,0.30)',  stroke: 'rgba(59,130,246,0.85)'  }, // blue
-  { fill: 'rgba(16,185,129,0.30)',  stroke: 'rgba(16,185,129,0.85)'  }, // emerald
-  { fill: 'rgba(245,158,11,0.30)',  stroke: 'rgba(245,158,11,0.85)'  }, // amber
-  { fill: 'rgba(239,68,68,0.30)',   stroke: 'rgba(239,68,68,0.85)'   }, // red
-  { fill: 'rgba(168,85,247,0.30)',  stroke: 'rgba(168,85,247,0.85)'  }, // violet
+  { fill: 'rgba(59,130,246,0.30)',  stroke: 'rgba(59,130,246,0.85)'  },
+  { fill: 'rgba(16,185,129,0.30)',  stroke: 'rgba(16,185,129,0.85)'  },
+  { fill: 'rgba(245,158,11,0.30)',  stroke: 'rgba(245,158,11,0.85)'  },
+  { fill: 'rgba(239,68,68,0.30)',   stroke: 'rgba(239,68,68,0.85)'   },
+  { fill: 'rgba(168,85,247,0.30)',  stroke: 'rgba(168,85,247,0.85)'  },
 ];
 
-// ---------------------------------------------------------------------------
-// ActiveHighlight — bbox è ora un array per supportare multi-highlight
-// ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
 interface ActiveHighlight {
   page: number;
-  bboxes: BBox[];   // array: uno o più rettangoli da disegnare
-  color: string;    // colore "base" per la status bar in basso
+  bboxes: BBox[];
+  color: string;
+  multiLabel?: boolean; // true = mostra legenda "Voce 1, Voce 2..."
 }
 
-// Bbox vuoto sentinel (solo navigazione, nessun disegno)
 const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
 function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
 
@@ -280,7 +307,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     await pdfPage.render({ canvasContext: ctx, viewport }).promise;
     if (seq !== renderSeqRef.current) return;
 
-    // Disegna tutti i bbox dell'highlight corrente
     if (hl && hl.page === page && hl.bboxes.length > 0) {
       hl.bboxes.forEach((bbox, idx) => {
         if (isBboxEmpty(bbox)) return;
@@ -340,22 +366,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [highlight]);
 
-  const highlightCount = highlight?.bboxes.filter(b => !isBboxEmpty(b)).length ?? 0;
+  const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
 
   return (
     <>
       <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
         <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
         <div className="flex items-center gap-2">
-          <button
-            disabled={currentPage <= 1}
-            onClick={() => goToPage(Math.max(1, currentPage - 1))}
+          <button disabled={currentPage <= 1} onClick={() => goToPage(Math.max(1, currentPage - 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
           >&#8249; Prec</button>
           <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
-          <button
-            disabled={currentPage >= totalPages}
-            onClick={() => goToPage(Math.min(totalPages, currentPage + 1))}
+          <button disabled={currentPage >= totalPages} onClick={() => goToPage(Math.min(totalPages, currentPage + 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
           >Succ &#8250;</button>
         </div>
@@ -365,16 +387,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           <canvas ref={canvasRef} className="block" />
         </div>
       </div>
-      {highlight && highlightCount > 0 && (
-        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2 flex-wrap">
-          {Array.from({ length: highlightCount }).map((_, idx) => (
+      {visibleBboxes.length > 0 && (
+        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-3 flex-wrap">
+          {visibleBboxes.map((_, idx) => (
             <span key={idx} className="flex items-center gap-1">
-              <span
-                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length].stroke }}
-              />
+              <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length].stroke }} />
               <span className="text-xs text-slate-500">
-                {highlightCount > 1 ? `Voce ${idx + 1}` : 'Testo evidenziato'} · pag. {highlight.page}
+                {highlight!.multiLabel ? `Voce ${idx + 1}` : 'Evidenziato'} &middot; pag. {highlight!.page}
               </span>
             </span>
           ))}
@@ -384,8 +404,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   );
 };
 
-// ---------------------------------------------------------------------------
-// Tipi
 // ---------------------------------------------------------------------------
 interface Props {
   files: File[];
@@ -427,9 +445,6 @@ const HIGHLIGHT_COLORS = [
   'rgba(245,158,11,0.35)',
 ];
 
-// ---------------------------------------------------------------------------
-// DataVerification
-// ---------------------------------------------------------------------------
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
@@ -454,29 +469,26 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
-    // Caso 1: bbox già nota (singola, dal JSON di estrazione)
     if (field?.bbox && field?.page) {
       setActiveHighlight({ page: field.page, bboxes: [field.bbox], color });
       return;
     }
 
-    // Caso 2: valore null (n.d.) — solo navigazione
     if (field?.page && field.value === null) {
       setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
       return;
     }
 
-    // Caso 3: cerca bbox tramite rawText (supporta somme con +)
     if (field?.page && field?.rawText && files[fileIdx]) {
-      // Naviga immediatamente (nessun highlight ancora)
       setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color });
       try {
         const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-        const bboxes = await findMultiBboxByText(doc, field.page, field.rawText);
+        const result = await findMultiBboxByText(doc, field.page, field.rawText);
         setActiveHighlight({
           page: field.page,
-          bboxes: bboxes.length > 0 ? bboxes : [EMPTY_BBOX],
+          bboxes: result.bboxes.length > 0 ? result.bboxes : [EMPTY_BBOX],
           color,
+          multiLabel: !result.isFormula && result.bboxes.length > 1,
         });
       } catch {
         // lascia navigate-only
@@ -513,8 +525,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
   return (
     <div className="flex h-[calc(100vh-80px)] gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white">
-
-      {/* COLONNA SINISTRA */}
       <div className="w-2/5 flex flex-col border-r border-slate-200 overflow-hidden">
         <div className="flex border-b border-slate-200 bg-slate-50">
           {tabLabels.map((label, i) => (
@@ -527,7 +537,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
-
           {activeTab === 0 && (
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
@@ -555,6 +564,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
             if (!year) return null;
+
+            // Pre-calcola quali campi sono somme di righe (non formule calcolate)
+            // per mostrare il badge Sigma solo dove ha senso
             return (
               <div className="space-y-3">
                 <p className="text-xs text-slate-500 mb-1">
@@ -583,8 +595,14 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   const hasBbox    = !!field?.bbox && !!field?.page;
                   const hasPage    = !!field?.page;
                   const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
-                  // Conta le voci nel rawText (presenza di "+")
-                  const multiCount = field?.rawText ? field.rawText.split('+').length : 1;
+
+                  // Badge Sigma: mostralo solo se ci sono "+" E i segmenti
+                  // sono nomi puri senza cifre (= somma di righe, non formula)
+                  const rawSegments = field?.rawText
+                    ? field.rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(Boolean)
+                    : [];
+                  const showSigma = rawSegments.length > 1 && !isCalculatedFormula(rawSegments);
+
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -594,9 +612,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
-                        {multiCount > 1 && (
+                        {showSigma && (
                           <span className="ml-1 text-[9px] font-semibold text-indigo-500 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5">
-                            \u03a3 {multiCount} voci
+                            \u03a3 {rawSegments.length} voci
                           </span>
                         )}
                         {isUnavail && (
@@ -669,7 +687,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                     })}
                   </div>
                 </div>
-
               </div>
             );
           })()}
@@ -684,7 +701,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
         </div>
       </div>
 
-      {/* COLONNA DESTRA — PDF Viewer */}
       <div className="w-3/5 flex flex-col bg-slate-100 overflow-hidden">
         {!pdfFile ? (
           <>
