@@ -1,38 +1,80 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, FinancialYearData } from '../types';
 import { CheckCircle, ChevronRight } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// ─────────────────────────────────────────────────────────────
-// Formattazione numeri in stile italiano
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Formattazione numeri stile italiano
+// Implementazione manuale: non dipende dal locale del browser.
+// Es: 1361443   → "1.361.443"
+//     115097.5  → "115.097,50"
+//     0         → "0"
+// ─────────────────────────────────────────────────────────────────────────────
 
-/** Formatta un numero intero/decimale con punti migliaia e virgola decimale.
- *  es. 1361443 → "1.361.443"   es. 115097.5 → "115.097,50" */
-const formatIT = (value: number | string | undefined | null): string => {
-  if (value === null || value === undefined || value === '') return '';
-  const num = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
-  if (isNaN(num)) return String(value);
-  // Usa Intl.NumberFormat con locale italiano
-  return new Intl.NumberFormat('it-IT', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(num);
-};
+/** Formatta un numero con punti migliaia e virgola decimale. */
+function formatIT(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '';
+  const negative = value < 0;
+  const abs      = Math.abs(value);
+  const intPart  = Math.floor(abs);
+  const decPart  = abs - intPart;
 
-/** Converte una stringa formattata in stile italiano in numero.
- *  es. "1.361.443" → 1361443   es. "115.097,50" → 115097.5 */
-const parseIT = (s: string): number => {
-  // Rimuove i punti migliaia, sostituisce la virgola decimale con il punto
-  const cleaned = s.replace(/\./g, '').replace(',', '.');
-  return parseFloat(cleaned) || 0;
-};
+  // Parte intera con punti ogni 3 cifre
+  const intStr = String(intPart);
+  let formatted = '';
+  for (let i = 0; i < intStr.length; i++) {
+    if (i > 0 && (intStr.length - i) % 3 === 0) formatted += '.';
+    formatted += intStr[i];
+  }
 
-// ─────────────────────────────────────────────────────────────
-// Input numerico formattato in italiano
-// ─────────────────────────────────────────────────────────────
+  // Parte decimale (solo se significativa)
+  if (decPart > 0.0001) {
+    const dec = decPart.toFixed(2).slice(1); // es. ".50"
+    formatted += dec.replace('.', ',');
+  }
+
+  return (negative ? '-' : '') + formatted;
+}
+
+/**
+ * Converte una stringa in stile italiano (o internazionale) in numero.
+ * Gestisce: "1.361.443" → 1361443   "115.097,50" → 115097.5
+ *           "115097"    → 115097    "115097.5"   → 115097.5
+ */
+function parseIT(s: string): number {
+  const trimmed = s.trim();
+  if (!trimmed) return 0;
+
+  // Se contiene sia punto che virgola: il punto è separatore migliaia, la virgola è decimale
+  if (trimmed.includes('.') && trimmed.includes(',')) {
+    return parseFloat(trimmed.replace(/\./g, '').replace(',', '.')) || 0;
+  }
+  // Se contiene solo virgola: è il separatore decimale italiano
+  if (trimmed.includes(',') && !trimmed.includes('.')) {
+    return parseFloat(trimmed.replace(',', '.')) || 0;
+  }
+  // Se contiene solo punto: potrebbe essere migliaia (es. "1.361") o decimale (es. "115.5")
+  // Euristica: se ci sono più punti o la parte dopo il punto ha 3 cifre → è migliaia
+  if (trimmed.includes('.')) {
+    const parts = trimmed.split('.');
+    const lastPart = parts[parts.length - 1];
+    if (parts.length > 2 || lastPart.length === 3) {
+      // Punto come separatore migliaia
+      return parseFloat(trimmed.replace(/\./g, '')) || 0;
+    }
+    // Punto come decimale
+    return parseFloat(trimmed) || 0;
+  }
+  return parseFloat(trimmed) || 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Componente NumericInput
+// Mostra il valore formattato a riposo; durante la modifica lascia digitare
+// liberamente; al blur ri-formatta.
+// ─────────────────────────────────────────────────────────────────────────────
 interface NumericInputProps {
   value: number | undefined | null;
   onChange: (n: number) => void;
@@ -41,23 +83,37 @@ interface NumericInputProps {
   placeholder?: string;
 }
 
-const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, className, placeholder }) => {
-  const [editing, setEditing]       = useState(false);
-  const [rawText, setRawText]       = useState('');
+const NumericInput: React.FC<NumericInputProps> = ({
+  value, onChange, onFocus, className, placeholder,
+}) => {
+  const [displayValue, setDisplayValue] = useState(formatIT(value ?? 0));
+  const isEditing = useRef(false);
 
-  const displayValue = editing ? rawText : formatIT(value);
+  // Aggiorna il display quando il valore esterno cambia (ma non durante la modifica)
+  useEffect(() => {
+    if (!isEditing.current) {
+      setDisplayValue(formatIT(value ?? 0));
+    }
+  }, [value]);
 
-  const handleFocus = () => {
-    // Mostra il numero grezzo (senza punti) per facilitare la modifica
-    setRawText(value !== null && value !== undefined ? String(value) : '');
-    setEditing(true);
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    isEditing.current = true;
+    // Seleziona tutto il testo per facilitare la sovrascrittura
+    e.target.select();
     onFocus?.();
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Permette di digitare liberamente (cifre, punti, virgole, segno meno)
+    const raw = e.target.value.replace(/[^0-9.,-]/g, '');
+    setDisplayValue(raw);
+  };
+
   const handleBlur = () => {
-    const n = parseIT(rawText);
-    onChange(n);
-    setEditing(false);
+    isEditing.current = false;
+    const parsed = parseIT(displayValue);
+    onChange(parsed);
+    setDisplayValue(formatIT(parsed));
   };
 
   return (
@@ -68,11 +124,13 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
       value={displayValue}
       placeholder={placeholder}
       onFocus={handleFocus}
+      onChange={handleChange}
       onBlur={handleBlur}
-      onChange={e => editing && setRawText(e.target.value)}
     />
   );
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface Props {
   files: File[];
@@ -113,9 +171,9 @@ interface ActiveHighlight {
   color: string;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Componente PDF isolato
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// PdfViewer
+// ─────────────────────────────────────────────────────────────────────────────
 interface PdfViewerProps {
   file: File;
   highlight: ActiveHighlight | null;
@@ -134,7 +192,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     pdfDocRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
-
     const load = async () => {
       const arrayBuffer = await file.arrayBuffer();
       if (cancelRef.current) return;
@@ -145,7 +202,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       setCurrentPage(1);
     };
     load();
-
     return () => { cancelRef.current = true; };
   }, [file]);
 
@@ -154,21 +210,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const canvas = canvasRef.current;
     const overlay = overlayRef.current;
     if (!pdf || !canvas || !overlay) return;
-
     const page     = await pdf.getPage(pageNum);
     const scale    = 1.5;
     const viewport = page.getViewport({ scale });
-
     canvas.width   = viewport.width;
     canvas.height  = viewport.height;
     overlay.width  = viewport.width;
     overlay.height = viewport.height;
-
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-
     const ctx = overlay.getContext('2d')!;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
-
     if (hl && hl.page === pageNum) {
       const { x0, y0, x1, y1 } = hl.bbox;
       const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
@@ -186,9 +237,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   }, []);
 
   useEffect(() => {
-    if (highlight?.page && highlight.page !== currentPage) {
-      setCurrentPage(highlight.page);
-    }
+    if (highlight?.page && highlight.page !== currentPage) setCurrentPage(highlight.page);
   }, [highlight]);
 
   useEffect(() => {
@@ -197,10 +246,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (pdfDocRef.current) {
-        renderPage(currentPage, highlight);
-        clearInterval(interval);
-      }
+      if (pdfDocRef.current) { renderPage(currentPage, highlight); clearInterval(interval); }
     }, 100);
     return () => clearInterval(interval);
   }, []);
@@ -210,37 +256,25 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
         <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
         <div className="flex items-center gap-2">
-          <button
-            disabled={currentPage <= 1}
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+          <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
           >&#8249; Prec</button>
           <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
-          <button
-            disabled={currentPage >= totalPages}
-            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+          <button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
           >Succ &#8250;</button>
         </div>
       </div>
-
       <div className="flex-1 overflow-y-auto flex justify-center p-4">
         <div className="relative shadow-2xl">
           <canvas ref={canvasRef} className="block" />
-          <canvas
-            ref={overlayRef}
-            className="absolute inset-0 pointer-events-none"
-            style={{ mixBlendMode: 'multiply' }}
-          />
+          <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none" style={{ mixBlendMode: 'multiply' }} />
         </div>
       </div>
-
       {highlight && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
-          <span
-            className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-            style={{ backgroundColor: highlight.color.replace('0.35', '0.7') }}
-          />
+          <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+            style={{ backgroundColor: highlight.color.replace('0.35', '0.7') }} />
           <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
         </div>
       )}
@@ -248,9 +282,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   );
 };
 
-// ─────────────────────────────────────────────────────────────
-// Componente principale DataVerification
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// DataVerification (main)
+// ─────────────────────────────────────────────────────────────────────────────
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]               = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]     = useState(0);
@@ -272,18 +306,13 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     });
   };
 
-  const tabLabels = [
-    'Importo GSE',
-    ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`),
-  ];
-
+  const tabLabels = ['Importo GSE', ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`)];
   const tabColors = [
     'border-purple-500 text-purple-700 bg-purple-50',
     'border-blue-500 text-blue-700 bg-blue-50',
     'border-emerald-500 text-emerald-700 bg-emerald-50',
     'border-amber-500 text-amber-700 bg-amber-50',
   ];
-
   const tabColorsInactive = [
     'text-slate-500 hover:text-purple-600 hover:bg-purple-50',
     'text-slate-500 hover:text-blue-600 hover:bg-blue-50',
@@ -296,32 +325,26 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
       {/* COLONNA SINISTRA */}
       <div className="w-2/5 flex flex-col border-r border-slate-200 overflow-hidden">
-
         {/* Tab bar */}
         <div className="flex border-b border-slate-200 bg-slate-50">
           {tabLabels.map((label, i) => (
-            <button
-              key={i}
-              onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
+            <button key={i} onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
               className={`flex-1 py-3 px-2 text-xs font-semibold border-b-2 transition-colors ${
-                activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]
-              }`}
-            >
+                activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]}`}>
               {label}
             </button>
           ))}
         </div>
 
-        {/* Form scrollabile */}
+        {/* Form */}
         <div className="flex-1 overflow-y-auto p-5">
 
-          {/* TAB 0: Importo GSE */}
+          {/* TAB 0: GSE */}
           {activeTab === 0 && (
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
                 Inserisci l'importo residuo da restituire al GSE per l'assolvimento dell'obbligo
-                extraprofitti derivante dalla vendita dell'energia elettrica
-                (art. 15-bis D.L. 4/2022).
+                extraprofitti derivante dalla vendita dell'energia elettrica (art. 15-bis D.L. 4/2022).
               </p>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">
                 Ammontare residuo GSE (€)
@@ -343,9 +366,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
           {/* TAB 1-3: Bilanci */}
           {activeTab >= 1 && (() => {
-            const yearIdx  = activeTab - 1;
-            const year     = data.yearsData[yearIdx];
-            const colorIdx = yearIdx;
+            const yearIdx = activeTab - 1;
+            const year    = data.yearsData[yearIdx];
             if (!year) return null;
             return (
               <div className="space-y-3">
@@ -385,7 +407,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
                           hasBbox ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
                         }`}
-                        onFocus={() => handleFieldFocus(field, colorIdx)}
+                        onFocus={() => handleFieldFocus(field, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                         placeholder="0"
                       />
@@ -402,10 +424,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
         {/* Bottone Conferma */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
-          <button
-            onClick={() => onApprove(data)}
-            className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl transition-colors shadow-sm"
-          >
+          <button onClick={() => onApprove(data)}
+            className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl transition-colors shadow-sm">
             <CheckCircle className="w-5 h-5" />
             Conferma dati e genera report
           </button>
@@ -417,9 +437,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
         {!pdfFile ? (
           <>
             <div className="px-4 py-2 bg-white border-b border-slate-200">
-              <span className="text-xs font-medium text-slate-400">
-                Seleziona un bilancio per visualizzare il documento
-              </span>
+              <span className="text-xs font-medium text-slate-400">Seleziona un bilancio per visualizzare il documento</span>
             </div>
             <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
               <svg className="w-16 h-16 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
