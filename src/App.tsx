@@ -4,7 +4,8 @@ import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
 import { DataVerification } from './components/DataVerification';
 import { ExtractedData, NarrativeData } from './types';
-import { Zap, AlertTriangle } from 'lucide-react';
+import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES } from './mockData';
+import { Zap, AlertTriangle, FlaskConical } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
 
@@ -17,10 +18,12 @@ export default function App() {
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
   const [narrativeData, setNarrativeData] = useState<NarrativeData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
 
   const handleAnalyze = useCallback(async () => {
     if (files.length !== REQUIRED_FILES) return;
     setError(null);
+    setIsDemoMode(false);
     setAppState('extracting');
     setExtractedData(null);
     setNarrativeData(null);
@@ -35,6 +38,22 @@ export default function App() {
     }
   }, [files]);
 
+  /**
+   * DEMO MODE: carica i dati mock reali (GEOSOL 2022-2024)
+   * senza chiamare OpenRouter. I file PDF devono essere caricati
+   * dall'utente per poter visualizzare i documenti nel PDF viewer.
+   */
+  const handleLoadDemo = useCallback(async () => {
+    setError(null);
+    setIsDemoMode(true);
+    setExtractedData(MOCK_EXTRACTED_DATA);
+    setNarrativeData(null);
+    setAppState('verifying');
+
+    // Se l'utente ha già caricato i file PDF corretti, vengono usati;
+    // altrimenti il PDF viewer mostrerà la pagina vuota ma la form funzionerà.
+  }, []);
+
   const handleReset = () => {
     setFiles([]);
     setAppState('idle');
@@ -42,6 +61,7 @@ export default function App() {
     setNarrativeData(null);
     setError(null);
     setProgress('');
+    setIsDemoMode(false);
   };
 
   const isLoading = appState === 'extracting' || appState === 'generating';
@@ -62,19 +82,27 @@ export default function App() {
               <p className="text-xs text-slate-500">Istruttoria Extraprofitti · art. 15-bis D.L. 4/2022</p>
             </div>
           </div>
-          {appState === 'done' && (
-            <button
-              onClick={handleReset}
-              className="text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
-            >
-              Nuova analisi
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {isDemoMode && appState === 'verifying' && (
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                <FlaskConical className="w-3.5 h-3.5" />
+                DEMO — GEOSOL 2022-2024
+              </span>
+            )}
+            {(appState === 'done' || appState === 'verifying') && (
+              <button
+                onClick={handleReset}
+                className="text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                Nuova analisi
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
+
         {/* STEP 1: Upload + Analyze */}
         {showUpload && (
           <div className="max-w-2xl mx-auto">
@@ -109,13 +137,43 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <button
-                  onClick={handleAnalyze}
-                  disabled={files.length !== REQUIRED_FILES}
-                  className="w-full py-3 px-6 mt-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
-                >
-                  {files.length === REQUIRED_FILES ? 'Avvia Analisi AI' : `Carica ${REQUIRED_FILES} bilanci per continuare`}
-                </button>
+                <div className="mt-4 flex flex-col gap-3">
+                  {/* Bottone principale: analisi reale */}
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={files.length !== REQUIRED_FILES}
+                    className="w-full py-3 px-6 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
+                  >
+                    {files.length === REQUIRED_FILES
+                      ? 'Avvia Analisi AI'
+                      : `Carica ${REQUIRED_FILES} bilanci per continuare`}
+                  </button>
+
+                  {/* Separatore */}
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 h-px bg-slate-200" />
+                    <span className="text-xs text-slate-400">oppure</span>
+                    <div className="flex-1 h-px bg-slate-200" />
+                  </div>
+
+                  {/* Bottone demo */}
+                  <button
+                    onClick={handleLoadDemo}
+                    className="w-full py-2.5 px-6 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
+                  >
+                    <FlaskConical className="w-4 h-4" />
+                    Usa dati di esempio (GEOSOL 2022-2024)
+                  </button>
+                  <p className="text-xs text-slate-400 text-center -mt-1">
+                    Bypassa OpenRouter e carica dati reali già estratti dai 3 bilanci.
+                    {files.length === REQUIRED_FILES && (
+                      <span className="text-green-600 font-medium"> I PDF caricati saranno usati per la visualizzazione con highlight.</span>
+                    )}
+                    {files.length !== REQUIRED_FILES && (
+                      <span> Per attivare l’highlight nel PDF viewer, carica prima i 3 file PDF.</span>
+                    )}
+                  </p>
+                </div>
               )}
             </div>
           </div>
@@ -130,7 +188,7 @@ export default function App() {
               try {
                 setAppState('generating');
                 setProgress('Generazione della narrativa in corso...');
-                const narrative = await generateNarrative(finalData, setProgress); 
+                const narrative = await generateNarrative(finalData, setProgress);
                 setNarrativeData(narrative);
                 setAppState('done');
               } catch (e: any) {
