@@ -183,6 +183,8 @@ body {
   border-radius: 3px;
 }
 .content { padding: 20px 32px 8px; }
+
+/* Interruzione di pagina prima di ogni h2, tranne il primo */
 h2 {
   font-size: 11pt;
   font-weight: bold;
@@ -191,7 +193,16 @@ h2 {
   padding: 5px 10px;
   background-color: #eef4fb;
   border-left: 4px solid #0f3460;
+  /* interruzione di pagina — applicata a tutti */
+  break-before: page;
+  page-break-before: always;
 }
+/* Il primo capitolo non ha interruzione */
+h2.no-break {
+  break-before: auto;
+  page-break-before: auto;
+}
+
 h3 { font-size: 10pt; font-weight: bold; color: #1e3a5f; margin: 12px 0 3px 0; }
 p   { font-size: 10.5pt; margin: 0 0 6px 0; color: #374151; }
 .muted { font-size: 9pt; color: #6b7280; }
@@ -253,6 +264,13 @@ td {
   font-size: 8pt;
   color: #9ca3af;
 }
+
+/* In stampa/PDF: assicura che il break venga rispettato */
+@media print {
+  h2 { break-before: page; page-break-before: always; }
+  h2.no-break { break-before: auto; page-break-before: auto; }
+  .doc-header, .meta-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
 </style>
 </head>
 <body>
@@ -270,7 +288,9 @@ td {
   <div class="meta-cell" style="margin-left:auto;color:#94a3b8;font-size:8pt">Generato il ${generatedDate}</div>
 </div>
 <div class="content">
-<h2>1 &mdash; Nota sintetica di esito</h2>
+
+<!-- classe no-break sul primo h2: non vuoi saltare pagina subito dopo l'header -->
+<h2 class="no-break">1 &mdash; Nota sintetica di esito</h2>
 <div class="narrative-box">
   <h3>&#128200; Analisi Ricavi e Utile</h3>
   <p>${esc(narrative.analisiRicavi ?? '')}</p>
@@ -287,6 +307,8 @@ td {
   <h3>&#9654; Conclusione &mdash; Esito: ${esitoStr}</h3>
   <p>${esc(narrative.conclusione ?? '')}</p>
 </div>
+
+<!-- Dal capitolo 2 in poi: break-before:page attivo -->
 <h2>2 &mdash; Sintesi bilanci &ndash; Ultimi ${years.length} esercizi</h2>
 <table><thead><tr>
   <th style="width:45%">Voce di bilancio</th>${yearHeaders}
@@ -310,6 +332,7 @@ ${bilRow('Debiti tributari', 'debitiTributari')}
 ${bilRow('Debiti previdenziali', 'debitiPrevidenziali')}
 ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </tbody></table>
+
 <h2>3 &mdash; KPI sintetici &ndash; Anno ${annoKpi}</h2>
 <p class="muted">Calcolati con formule deterministiche.&nbsp;
   <span style="color:#166534;font-weight:bold">&#9632; positivo</span>&nbsp;
@@ -321,6 +344,7 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
   <th style="width:52%">Formula</th>
   <th style="width:22%;text-align:right">Valore</th>
 </tr></thead><tbody>${kpiTableRows}</tbody></table>
+
 <h2>4 &mdash; Residuo GSE e indici di copertura</h2>
 <p><strong>Importo residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}&emsp;<strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}&emsp;<strong>Fonte:</strong>&nbsp;PDF allegato</p>
 <table><thead><tr>
@@ -345,6 +369,7 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </tr>
 </tbody></table>
 <div class="copertura-note">${esc(narrative.commentoCopertura ?? '')}</div>
+
 <h2>5 &mdash; Checklist GSE ed extraprofitti</h2>
 <table><thead><tr>
   <th style="width:40%">Voce verificata</th>
@@ -356,6 +381,7 @@ ${checkRow('Accantonamenti Fondo Rischi extraprofitti', checklist.accantonamenti
 ${checkRow('Riduzioni ricavi per effetto della norma', checklist.riduzioniRicavi)}
 ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
 </tbody></table>
+
 </div>
 <div class="footer">
   Report generato automaticamente &mdash; KPI calcolati con formule deterministiche &mdash; Narrativa generata da AI &mdash;
@@ -429,7 +455,7 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
         </div>
       </div>
 
-      {/* Preview iframe — nessun border-radius per non tagliare l'header a piena larghezza */}
+      {/* Preview iframe */}
       <div className="border border-slate-200 overflow-hidden shadow-sm">
         <iframe
           ref={iframeRef}
