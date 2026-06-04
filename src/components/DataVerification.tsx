@@ -104,21 +104,25 @@ async function findBboxByText(
 
 interface NumericInputProps {
   value: number | undefined | null;
-  onChange: (n: number) => void;
+  onChange: (n: number | null) => void;
   onFocus?: () => void;
   className?: string;
-  placeholder?: string;
+  isUnavailable?: boolean; // true = dato non disponibile (null semantico)
 }
 
 const NumericInput: React.FC<NumericInputProps> = ({
-  value, onChange, onFocus, className, placeholder,
+  value, onChange, onFocus, className, isUnavailable,
 }) => {
-  const [displayValue, setDisplayValue] = useState(formatIT(value ?? 0));
+  const [displayValue, setDisplayValue] = useState(
+    isUnavailable ? '' : formatIT(value ?? 0)
+  );
   const isEditing = useRef(false);
 
   useEffect(() => {
-    if (!isEditing.current) setDisplayValue(formatIT(value ?? 0));
-  }, [value]);
+    if (!isEditing.current) {
+      setDisplayValue(isUnavailable ? '' : formatIT(value ?? 0));
+    }
+  }, [value, isUnavailable]);
 
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
     isEditing.current = true;
@@ -133,9 +137,15 @@ const NumericInput: React.FC<NumericInputProps> = ({
 
   const handleBlur = () => {
     isEditing.current = false;
-    const parsed = parseIT(displayValue);
-    onChange(parsed);
-    setDisplayValue(formatIT(parsed));
+    if (displayValue.trim() === '') {
+      // campo lasciato vuoto: rimane null (n.d.)
+      onChange(null);
+      setDisplayValue('');
+    } else {
+      const parsed = parseIT(displayValue);
+      onChange(parsed);
+      setDisplayValue(formatIT(parsed));
+    }
   };
 
   return (
@@ -144,7 +154,7 @@ const NumericInput: React.FC<NumericInputProps> = ({
       inputMode="numeric"
       className={className}
       value={displayValue}
-      placeholder={placeholder}
+      placeholder={isUnavailable ? 'n.d.' : '0'}
       onFocus={handleFocus}
       onChange={handleChange}
       onBlur={handleBlur}
@@ -206,18 +216,13 @@ interface PdfViewerProps {
 const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages]   = useState(1);
-  // Un solo canvas — l'highlight viene disegnato sopra il PDF nello stesso contesto
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const cancelRef = useRef(false);
-  // Memorizza il viewport dell'ultima pagina renderizzata per ridisegnare solo l'hl
-  const lastViewportRef = useRef<pdfjsLib.PageViewport | null>(null);
-  const lastPageNumRef  = useRef<number>(0);
 
   useEffect(() => {
     cancelRef.current = false;
     pdfDocRef.current = null;
-    lastViewportRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
     const load = async () => {
@@ -233,19 +238,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelRef.current = true; };
   }, [file]);
 
-  /**
-   * Disegna l'highlight sul canvas usando il viewport già memorizzato,
-   * senza ri-renderizzare il PDF (evita flickering).
-   */
   const drawHighlight = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport, pageNum: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
-    // Rimuove eventuale highlight precedente ridisegnando solo il rettangolo pulito
-    // Non è necessario: il PDF viene ridisegnato intero in renderPage, poi chiamiamo drawHighlight
     if (!hl || hl.page !== pageNum) return;
     const { x0, y0, x1, y1 } = hl.bbox;
-    if (x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0) return; // bbox vuoto = solo navigazione pagina
+    if (x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0) return;
     const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
     const [bx, by] = viewport.convertToViewportPoint(x1, y0);
     const rx = Math.min(ax, bx);
@@ -272,12 +271,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const viewport = page.getViewport({ scale });
     canvas.width   = viewport.width;
     canvas.height  = viewport.height;
-    // Render PDF sul canvas
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-    // Memorizza viewport e pagina per usi successivi
-    lastViewportRef.current = viewport;
-    lastPageNumRef.current  = pageNum;
-    // Disegna highlight sopra il PDF nello stesso canvas
     drawHighlight(hl, viewport, pageNum);
   }, [drawHighlight]);
 
@@ -312,7 +306,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       </div>
       <div className="flex-1 overflow-y-auto flex justify-center p-4">
         <div className="relative shadow-2xl">
-          {/* Canvas singolo: niente overlay, niente mixBlendMode */}
           <canvas ref={canvasRef} className="block" />
         </div>
       </div>
@@ -359,6 +352,12 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       return;
     }
 
+    // Se value è null (dato n.d.) naviga alla pagina ma non cercare bbox
+    if (field?.page && field.value === null) {
+      setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
+      return;
+    }
+
     if (field?.page && field?.rawText && files[fileIdx]) {
       setActiveHighlight(null);
       try {
@@ -378,7 +377,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     setActiveHighlight(null);
   }, [files, getPdfDoc]);
 
-  const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number) => {
+  const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
       (next.yearsData[yearIdx][key] as ExtractedField<number>).value = value;
@@ -434,7 +433,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   value={data.gseResidual?.value}
                   className="w-full pl-8 pr-3 py-3 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition"
                   onChange={n => setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }))}
-                  placeholder="0"
                 />
               </div>
               {data.gseResidual?.rawText && (
@@ -470,10 +468,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 </div>
 
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field      = year[key] as ExtractedField<number>;
-                  const hasBbox    = !!field?.bbox && !!field?.page;
-                  const hasPage    = !!field?.page;
-                  const badgeColor = hasBbox ? 'text-blue-500' : 'text-slate-400';
+                  const field       = year[key] as ExtractedField<number>;
+                  const isUnavail   = field?.value === null && !!field?.rawText;
+                  const hasBbox     = !!field?.bbox && !!field?.page;
+                  const hasPage     = !!field?.page;
+                  const badgeColor  = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -483,15 +482,24 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
+                        {isUnavail && (
+                          <span className="ml-1 text-[9px] font-semibold text-amber-500 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
+                            non disponibile
+                          </span>
+                        )}
                       </label>
                       <NumericInput
                         value={field?.value}
+                        isUnavailable={isUnavail}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          hasPage ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
+                          isUnavail
+                            ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
+                            : hasPage
+                            ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
+                            : 'border-slate-200 focus:ring-slate-300'
                         }`}
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
-                        placeholder="0"
                       />
                       {field?.rawText && (
                         <p className="mt-0.5 text-[10px] text-slate-400 italic">
