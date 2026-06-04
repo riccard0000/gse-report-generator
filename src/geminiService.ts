@@ -21,7 +21,37 @@ const isPdfTextItem = (item: unknown): item is PdfTextItem =>
   'str' in item &&
   'transform' in item;
 
-// ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y) ─
+// ─── Legge config modelli dal KV via Worker (con fallback ai default) ─────
+interface ModelConfig {
+  extract:   { primary: string; fallback: string };
+  narrative: { primary: string; fallback: string };
+}
+
+let _cachedConfig: ModelConfig | null = null;
+
+const getModelConfig = async (): Promise<ModelConfig> => {
+  if (_cachedConfig) return _cachedConfig;
+  const defaultConfig: ModelConfig = {
+    extract:   { primary: OPENROUTER_MODEL_EXTRACT,   fallback: OPENROUTER_MODEL_FALLBACK },
+    narrative: { primary: OPENROUTER_MODEL_NARRATIVE, fallback: OPENROUTER_MODEL_FALLBACK },
+  };
+  try {
+    const base = OPENROUTER_ENDPOINT ?? '';
+    if (!base) return defaultConfig;
+    const res = await fetch(base.replace(/\/$/, '') + '/config');
+    if (!res.ok) return defaultConfig;
+    const data = await res.json() as { models?: ModelConfig };
+    _cachedConfig = data.models ?? defaultConfig;
+    return _cachedConfig;
+  } catch {
+    return defaultConfig;
+  }
+};
+
+// Invalida la cache quando le impostazioni vengono salvate
+export const invalidateModelConfigCache = () => { _cachedConfig = null; };
+
+// ─── Parsing strutturale del PDF ──────────────────────────────────────────
 const extractStructuredText = (items: PdfTextItem[]): string => {
   const rows: Record<number, PdfTextItem[]> = {};
   items.forEach((item) => {
@@ -40,7 +70,6 @@ const extractStructuredText = (items: PdfTextItem[]): string => {
     .join('\n');
 };
 
-// ─── Estrazione testo da un singolo PDF ────────────────────────────────────
 const extractTextFromPdf = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -54,10 +83,8 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   return fullText;
 };
 
-// ─── Sleep helper ──────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ─── Chiamata singola al proxy Cloudflare Worker ───────────────────────────
 const callModel = async (
   model: string,
   messages: object[],
@@ -71,9 +98,7 @@ const callModel = async (
       'In produzione: aggiungi VITE_PROXY_URL nei secret di GitHub Actions.'
     );
   }
-
   onProgress?.(`Chiamata AI (${model.split('/').pop()})...`);
-
   const response = await fetch(proxyUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -84,7 +109,6 @@ const callModel = async (
       response_format: { type: 'json_object' },
     }),
   });
-
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(
@@ -93,13 +117,10 @@ const callModel = async (
       }`
     );
   }
-
   const data = await response.json() as { choices?: { message?: { content?: string } }[] };
   return data.choices?.[0]?.message?.content ?? '';
 };
 
-// ─── Retry con backoff esponenziale su 429/503 ──────────────────────────
-// Tentativi: 1º immediato, 2º dopo 2s, 3º dopo 4s
 const withRetry = async (
   fn: () => Promise<string>,
   onProgress?: (msg: string) => void,
@@ -114,7 +135,7 @@ const withRetry = async (
       lastErr = err instanceof Error ? err : new Error(String(err));
       const is429 = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
       if (!is429 || attempt === maxAttempts) throw lastErr;
-      const delay = baseDelayMs * attempt; // 2s, 4s, 6s
+      const delay = baseDelayMs * attempt;
       onProgress?.(`⏳ Rate limit — attendo ${delay / 1000}s (tentativo ${attempt}/${maxAttempts})...`);
       await sleep(delay);
     }
@@ -122,42 +143,22 @@ const withRetry = async (
   throw lastErr;
 };
 
-// ─── Cascade completa: Gemma → Nemotron → GPT-oss ────────────────────────
-// Ogni modello viene tentato con retry prima di passare al successivo.
-const CASCADE_MODELS = [
-  OPENROUTER_MODEL_EXTRACT,   // google/gemma-4-31b-it:free
-  OPENROUTER_MODEL_NARRATIVE, // nvidia/nemotron-3-super-120b-a12b:free
-  OPENROUTER_MODEL_FALLBACK,  // openai/gpt-oss-120b:free
-];
-
-const callOpenRouter = async (
-  model: string,
+// ─── Cascade dinamica basata sulla config KV ─────────────────────────────
+const callOpenRouterExtract = async (
   messages: object[],
   onProgress?: (msg: string) => void
 ): Promise<string> => {
-  // Per la chiamata narrativa usiamo direttamente il modello specificato con retry
-  const modelsToTry = model === OPENROUTER_MODEL_EXTRACT
-    ? CASCADE_MODELS
-    : [model, OPENROUTER_MODEL_FALLBACK];
-
+  const cfg = await getModelConfig();
+  const modelsToTry = [cfg.extract.primary, cfg.extract.fallback].filter(Boolean);
   let lastErr: Error = new Error('Tutti i modelli non disponibili');
-
   for (const m of modelsToTry) {
     try {
-      return await withRetry(
-        () => callModel(m, messages, onProgress),
-        onProgress
-      );
+      return await withRetry(() => callModel(m, messages, onProgress), onProgress);
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      const isRetryable =
-        lastErr.message.includes('429') ||
-        lastErr.message.includes('503') ||
-        lastErr.message.includes('overload');
-
+      const isRetryable = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
       if (isRetryable && m !== modelsToTry[modelsToTry.length - 1]) {
         onProgress?.(`⚡ ${m.split('/').pop()} esaurito, passo a modello successivo...`);
-        // Pausa 1s tra switch di modello per non colpire subito il nuovo
         await sleep(1000);
         continue;
       }
@@ -167,35 +168,49 @@ const callOpenRouter = async (
   throw lastErr;
 };
 
-// ─── Prompt per singolo PDF ───────────────────────────────────────────────
+const callOpenRouterNarrative = async (
+  messages: object[],
+  onProgress?: (msg: string) => void
+): Promise<string> => {
+  const cfg = await getModelConfig();
+  const modelsToTry = [cfg.narrative.primary, cfg.narrative.fallback].filter(Boolean);
+  let lastErr: Error = new Error('Tutti i modelli non disponibili');
+  for (const m of modelsToTry) {
+    try {
+      return await withRetry(() => callModel(m, messages, onProgress), onProgress);
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const isRetryable = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
+      if (isRetryable && m !== modelsToTry[modelsToTry.length - 1]) {
+        onProgress?.(`⚡ ${m.split('/').pop()} esaurito, passo a modello successivo...`);
+        await sleep(1000);
+        continue;
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+};
+
 const SINGLE_PDF_PROMPT = (fileName: string) =>
-  `${EXTRACTION_PROMPT}
+  `${EXTRACTION_PROMPT}\n\nNOTA: Stai analizzando UN SOLO documento (${fileName}).\nNell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).\nCompila comunque companyName, vatNumber, gseResidual e checklist.`;
 
-NOTA: Stai analizzando UN SOLO documento (${fileName}).
-Nell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).
-Compila comunque companyName, vatNumber, gseResidual e checklist.`;
-
-// ─── Merge di più ExtractedData parziali in un unico oggetto ──────────────
 const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
   const base = results[0];
-
   const allYears = results
     .flatMap((r) => r.yearsData ?? [])
     .filter((y) => y && y.year)
     .sort((a, b) => Number(b.year) - Number(a.year));
-
   const seenYears = new Set<string>();
   const yearsData = allYears.filter((y) => {
     if (seenYears.has(y.year)) return false;
     seenYears.add(y.year);
     return true;
   });
-
   const mergeChecklistField = (key: keyof ExtractedData['checklist']) => {
     const found = results.find((r) => r.checklist?.[key]?.presente === true);
     return found?.checklist?.[key] ?? base.checklist?.[key];
   };
-
   return {
     ...base,
     yearsData,
@@ -208,14 +223,11 @@ const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
   };
 };
 
-// ─── Export: Estrazione dati dai PDF (sequenziale + retry) ──────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
 ): Promise<ExtractedData> => {
   onProgress?.('Estrazione testo dai PDF...');
-
-  // 1. Estrai testo da ogni PDF
   const docTexts: { fileName: string; text: string }[] = [];
   for (const file of files) {
     onProgress?.(`Lettura: ${file.name}`);
@@ -223,33 +235,21 @@ export const extractDataFromPdfs = async (
     docTexts.push({ fileName: file.name, text });
   }
 
-  // 2. Chiamate AI sequenziali (1 alla volta per rispettare rate limit :free)
   const parsedResults: ExtractedData[] = [];
   const errors: string[] = [];
 
   for (let i = 0; i < docTexts.length; i++) {
     const { fileName, text } = docTexts[i];
     onProgress?.(`Analisi AI [${i + 1}/${docTexts.length}]: ${fileName}...`);
-
-    // Pausa di 1.5s tra una chiamata e l'altra (rate limit :free ≈ 1 req/s)
     if (i > 0) await sleep(1500);
-
     try {
-      const raw = await callOpenRouter(
-        OPENROUTER_MODEL_EXTRACT,
+      const raw = await callOpenRouterExtract(
         [
-          {
-            role: 'system',
-            content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.',
-          },
-          {
-            role: 'user',
-            content: `${SINGLE_PDF_PROMPT(fileName)}\n\n=== DOCUMENTO: ${fileName} ===\n${text}`,
-          },
+          { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
+          { role: 'user', content: `${SINGLE_PDF_PROMPT(fileName)}\n\n=== DOCUMENTO: ${fileName} ===\n${text}` },
         ],
         (msg) => onProgress?.(`  [PDF ${i + 1}] ${msg}`)
       );
-
       const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       parsedResults.push(JSON.parse(cleaned) as ExtractedData);
     } catch (err) {
@@ -262,45 +262,28 @@ export const extractDataFromPdfs = async (
   if (parsedResults.length === 0) {
     throw new Error(`Nessuna estrazione riuscita.\n${errors.join('\n')}`);
   }
-
   if (errors.length > 0) {
     onProgress?.(`⚠️ ${errors.length} PDF parzialmente non estratti.`);
   }
-
   onProgress?.('Merge dati estratti...');
   return mergeExtractedData(parsedResults);
 };
 
-// ─── Export: Generazione narrativa tecnica (con KPI deterministici) ─────────
 export const generateNarrative = async (
   data: ExtractedData,
   onProgress?: (msg: string) => void
 ): Promise<NarrativeData> => {
   onProgress?.('Calcolo KPI deterministici...');
-
   const lastYear = data.yearsData[data.yearsData.length - 1];
   const kpis = calculateKpis(lastYear, data.gseResidual?.value ?? null);
-
   onProgress?.('Generazione narrativa tecnica (seconda chiamata AI)...');
-
-  const text = await callOpenRouter(
-    OPENROUTER_MODEL_NARRATIVE,
+  const text = await callOpenRouterNarrative(
     [
-      {
-        role: 'system',
-        content: 'Sei un funzionario GSE esperto. Rispondi solo in JSON valido, senza markdown.',
-      },
-      {
-        role: 'user',
-        content: NARRATIVE_PROMPT(
-          JSON.stringify(data, null, 2),
-          JSON.stringify({ anno: lastYear.year, ...kpis }, null, 2)
-        ),
-      },
+      { role: 'system', content: 'Sei un funzionario GSE esperto. Rispondi solo in JSON valido, senza markdown.' },
+      { role: 'user', content: NARRATIVE_PROMPT(JSON.stringify(data, null, 2), JSON.stringify({ anno: lastYear.year, ...kpis }, null, 2)) },
     ],
     onProgress
   );
-
   try {
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned) as NarrativeData;
