@@ -7,73 +7,66 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dis
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Formattazione numeri stile italiano
-// Implementazione manuale: non dipende dal locale del browser.
-// Es: 1361443   → "1.361.443"
-//     115097.5  → "115.097,50"
-//     0         → "0"
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Formatta un numero con punti migliaia e virgola decimale. */
 function formatIT(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
   const negative = value < 0;
   const abs      = Math.abs(value);
   const intPart  = Math.floor(abs);
   const decPart  = abs - intPart;
-
-  // Parte intera con punti ogni 3 cifre
-  const intStr = String(intPart);
-  let formatted = '';
+  const intStr   = String(intPart);
+  let formatted  = '';
   for (let i = 0; i < intStr.length; i++) {
     if (i > 0 && (intStr.length - i) % 3 === 0) formatted += '.';
     formatted += intStr[i];
   }
-
-  // Parte decimale (solo se significativa)
   if (decPart > 0.0001) {
-    const dec = decPart.toFixed(2).slice(1); // es. ".50"
+    const dec = decPart.toFixed(2).slice(1);
     formatted += dec.replace('.', ',');
   }
-
   return (negative ? '-' : '') + formatted;
 }
 
-/**
- * Converte una stringa in stile italiano (o internazionale) in numero.
- * Gestisce: "1.361.443" → 1361443   "115.097,50" → 115097.5
- *           "115097"    → 115097    "115097.5"   → 115097.5
- */
 function parseIT(s: string): number {
   const trimmed = s.trim();
   if (!trimmed) return 0;
-
-  // Se contiene sia punto che virgola: il punto è separatore migliaia, la virgola è decimale
   if (trimmed.includes('.') && trimmed.includes(',')) {
     return parseFloat(trimmed.replace(/\./g, '').replace(',', '.')) || 0;
   }
-  // Se contiene solo virgola: è il separatore decimale italiano
   if (trimmed.includes(',') && !trimmed.includes('.')) {
     return parseFloat(trimmed.replace(',', '.')) || 0;
   }
-  // Se contiene solo punto: potrebbe essere migliaia (es. "1.361") o decimale (es. "115.5")
-  // Euristica: se ci sono più punti o la parte dopo il punto ha 3 cifre → è migliaia
   if (trimmed.includes('.')) {
-    const parts = trimmed.split('.');
+    const parts    = trimmed.split('.');
     const lastPart = parts[parts.length - 1];
     if (parts.length > 2 || lastPart.length === 3) {
-      // Punto come separatore migliaia
       return parseFloat(trimmed.replace(/\./g, '')) || 0;
     }
-    // Punto come decimale
     return parseFloat(trimmed) || 0;
   }
   return parseFloat(trimmed) || 0;
 }
 
+/**
+ * Pulisce il rawText estratto dal PDF:
+ * - Aggiunge uno spazio prima di ogni sequenza numerica non preceduta da spazio
+ * - Normalizza spazi multipli
+ * - Tronca a maxLen caratteri con …
+ */
+function cleanRawText(raw: string, maxLen = 60): string {
+  let s = raw
+    // Spazio prima di un numero (cifra o segno -) non preceduto da spazio o inizio riga
+    .replace(/([^\s])(-?\d)/g, '$1 $2')
+    // Normalizza spazi multipli
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
+  return s;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Componente NumericInput
-// Mostra il valore formattato a riposo; durante la modifica lascia digitare
-// liberamente; al blur ri-formatta.
+// NumericInput
 // ─────────────────────────────────────────────────────────────────────────────
 interface NumericInputProps {
   value: number | undefined | null;
@@ -89,22 +82,17 @@ const NumericInput: React.FC<NumericInputProps> = ({
   const [displayValue, setDisplayValue] = useState(formatIT(value ?? 0));
   const isEditing = useRef(false);
 
-  // Aggiorna il display quando il valore esterno cambia (ma non durante la modifica)
   useEffect(() => {
-    if (!isEditing.current) {
-      setDisplayValue(formatIT(value ?? 0));
-    }
+    if (!isEditing.current) setDisplayValue(formatIT(value ?? 0));
   }, [value]);
 
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
     isEditing.current = true;
-    // Seleziona tutto il testo per facilitare la sovrascrittura
     e.target.select();
     onFocus?.();
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Permette di digitare liberamente (cifre, punti, virgole, segno meno)
     const raw = e.target.value.replace(/[^0-9.,-]/g, '');
     setDisplayValue(raw);
   };
@@ -412,7 +400,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         placeholder="0"
                       />
                       {field?.rawText && (
-                        <p className="mt-0.5 text-[10px] text-slate-400 italic truncate">«{field.rawText}»</p>
+                        <p className="mt-0.5 text-[10px] text-slate-400 italic">
+                          «{cleanRawText(field.rawText)}»
+                        </p>
                       )}
                     </div>
                   );
