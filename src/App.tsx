@@ -8,6 +8,8 @@ import { Zap, AlertTriangle } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
 
+const REQUIRED_FILES = 3;
+
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [appState, setAppState] = useState<AppState>('idle');
@@ -17,7 +19,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = useCallback(async () => {
-    if (files.length === 0) return;
+    if (files.length !== REQUIRED_FILES) return;
     setError(null);
     setAppState('extracting');
     setExtractedData(null);
@@ -79,9 +81,15 @@ export default function App() {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h2 className="text-lg font-semibold text-slate-800 mb-1">Carica i documenti</h2>
               <p className="text-sm text-slate-500 mb-6">
-                Carica i bilanci aziendali (fino a 3 anni) e il documento GSE con l'importo residuo.
+                Carica esattamente {REQUIRED_FILES} bilanci aziendali in formato PDF (ultimi 3 esercizi).
               </p>
-              <FileUploader files={files} onFilesChange={setFiles} />
+              <FileUploader files={files} onFilesChange={setFiles} maxFiles={REQUIRED_FILES} />
+
+              {files.length > 0 && files.length < REQUIRED_FILES && (
+                <p className="text-xs text-amber-600 mb-3">
+                  Mancano ancora {REQUIRED_FILES - files.length} bilancio/bilanci per poter avviare l'analisi.
+                </p>
+              )}
 
               {error && (
                 <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start space-x-3">
@@ -103,10 +111,10 @@ export default function App() {
               ) : (
                 <button
                   onClick={handleAnalyze}
-                  disabled={files.length === 0}
+                  disabled={files.length !== REQUIRED_FILES}
                   className="w-full py-3 px-6 mt-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
                 >
-                  Avvia Analisi AI
+                  {files.length === REQUIRED_FILES ? 'Avvia Analisi AI' : `Carica ${REQUIRED_FILES} bilanci per continuare`}
                 </button>
               )}
             </div>
@@ -118,11 +126,10 @@ export default function App() {
           <DataVerification
             files={files}
             extractedData={extractedData}
-            onApprove={async (finalData) => { // <--- Aggiungi 'finalData' qui
+            onApprove={async (finalData) => {
               try {
                 setAppState('generating');
                 setProgress('Generazione della narrativa in corso...');
-                // Passa finalData invece di extractedData originale
                 const narrative = await generateNarrative(finalData, setProgress); 
                 setNarrativeData(narrative);
                 setAppState('done');
