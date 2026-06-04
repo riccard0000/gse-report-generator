@@ -61,27 +61,34 @@ function cleanRawText(raw: string, maxLen = 60): string {
 }
 
 // ---------------------------------------------------------------------------
-// Tipo discriminato — unica fonte di verità per highlight E badge UI
+// Tipi
 // ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
+// kind è l'unica fonte di verità per badge UI e comportamento highlight
 type MatchResult =
-  | { kind: 'single';    bboxes: BBox[] }  // label + eventuale bbox numerico
-  | { kind: 'formula';   bboxes: BBox[] }  // formula calcolata: no badge Σ
-  | { kind: 'multi-sum'; bboxes: BBox[] }; // somma di righe: badge Σ N voci
+  | { kind: 'single';    bboxes: BBox[];  segmentNames: string[] }
+  | { kind: 'formula';   bboxes: BBox[];  segmentNames: string[] }  // no badge Σ, highlight singolo + numero
+  | { kind: 'multi-sum'; bboxes: BBox[];  segmentNames: string[] }; // badge Σ con nomi, solo label-bbox
 
 // ---------------------------------------------------------------------------
-// Determina se un rawText con "+" rappresenta una formula calcolata
-// (ogni segmento contiene almeno una cifra numerica) oppure una somma
-// di righe del bilancio (i segmenti sono nomi puri senza cifre).
+// Determina se un rawText con "+" è formula calcolata (segmenti con cifre)
+// o somma di righe bilancio (segmenti senza cifre).
+// Es. formula:   "EBIT 160.638 + ammortamenti 145.786"
+//     multi-sum: "Erario c/IRES + IRAP + ritenute"
 // ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
   const withDigits = segments.filter(s => /\d/.test(s)).length;
   return withDigits >= Math.ceil(segments.length / 2);
 }
 
+// Nomi leggibili dei segmenti (strip delle cifre per le formule)
+function segmentDisplayName(seg: string): string {
+  return seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
 // ---------------------------------------------------------------------------
-// Cerca UN singolo segmento di testo nel PDF e ritorna il suo bbox + item
+// Cerca un segmento testuale nella pagina, ritorna bbox + item
 // ---------------------------------------------------------------------------
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
@@ -95,7 +102,7 @@ async function findSingleBboxWithItem(
   // Strategia 1: match esatto
   found = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg) ?? null;
 
-  // Strategia 2: keyword match
+  // Strategia 2: keyword match (parole >= 3 char, prime 5)
   if (!found) {
     const keywords = seg
       .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
@@ -114,7 +121,6 @@ async function findSingleBboxWithItem(
           bestCount = count;
         }
       }
-      // Strategia 3: fallback prima keyword
       if (!found) {
         found = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
       }
@@ -129,20 +135,10 @@ async function findSingleBboxWithItem(
   };
 }
 
-// Wrapper che restituisce solo il bbox (compatibilità con il resto del codice)
-async function findSingleBbox(
-  items: PdfTextItem[],
-  segment: string,
-): Promise<BBox | null> {
-  const r = await findSingleBboxWithItem(items, segment);
-  return r ? r.bbox : null;
-}
-
 // ---------------------------------------------------------------------------
-// Cerca il token numerico più vicino a destra dell'etichetta trovata,
-// sulla stessa riga (tolleranza y ±5pt).
-// Nei bilanci XBRL le celle numeriche sono item separati sulla stessa riga.
-// Restituisce il bbox del numero se trovato, null altrimenti.
+// Cerca il token numerico più vicino a destra dell'etichetta, stessa riga.
+// Usato SOLO per single / formula dove il valore è univoco.
+// Per multi-sum NON viene chiamato: la colonna è ambigua.
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -150,35 +146,23 @@ function findNumericNeighbor(
   fieldValue: number | null | undefined,
 ): BBox | null {
   const labelTf = labelItem.transform;
-  const labelY  = labelTf[5];          // y0 del label
-  const labelX1 = labelTf[4] + labelItem.width; // bordo destro del label
-  const Y_TOL   = 5;                   // tolleranza riga (pt)
+  const labelY  = labelTf[5];
+  const labelX1 = labelTf[4] + labelItem.width;
+  const Y_TOL   = 5;
 
-  // Token numerici sulla stessa riga, a destra del label
   const sameRow = items.filter(it => {
     const tf = it.transform;
-    const iy = tf[5];
-    const ix = tf[4];
-    return Math.abs(iy - labelY) <= Y_TOL && ix > labelX1;
+    return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
   });
-
   if (sameRow.length === 0) return null;
 
-  // Filtra i token che sembrano numeri (contengono solo cifre, punti, virgole, trattini)
-  const numericTokens = sameRow.filter(it =>
-    /^-?[\d.,]+[-]?$/.test(it.str.trim())
-  );
+  const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
+  const candidates    = numericTokens.length > 0 ? numericTokens : sameRow;
 
-  const candidates = numericTokens.length > 0 ? numericTokens : sameRow;
-
-  // Se abbiamo il valore numerico del campo, cerchiamo il token che lo contiene
+  // Match per valore esatto
   if (fieldValue !== null && fieldValue !== undefined) {
-    const absVal  = Math.abs(fieldValue);
-    // Rappresentazioni attese: "56.797" "56797" "56,797"
-    const reprs   = [
-      String(Math.round(absVal)),
-      absVal.toFixed(0),
-    ];
+    const absVal = Math.abs(fieldValue);
+    const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
     const byValue = candidates.find(it => {
       const s = it.str.replace(/[.,\s-]/g, '');
       return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
@@ -189,18 +173,14 @@ function findNumericNeighbor(
     }
   }
 
-  // Fallback: token numerico più vicino a destra
-  const closest = candidates.reduce((a, b) =>
-    a.transform[4] < b.transform[4] ? a : b
-  );
+  // Fallback: più vicino a destra
+  const closest = candidates.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height };
 }
 
 // ---------------------------------------------------------------------------
-// Cerca nel PDF e restituisce un MatchResult tipizzato.
-// Per ogni etichetta trovata aggiunge anche il bbox del valore numerico
-// sulla stessa riga, così l'utente vede esattamente quale numero è stato usato.
+// Funzione principale: trova bbox nel PDF e classifica il risultato
 // ---------------------------------------------------------------------------
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -213,58 +193,60 @@ async function findBboxByText(
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
 
-    const segments = rawText
+    const rawSegments = rawText
       .split(/\s*\+\s*/)
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    // Helper: bbox etichetta + bbox numero affiancato
-    async function bboxPair(
-      seg: string,
-      numVal?: number | null,
-    ): Promise<BBox[]> {
-      const r = await findSingleBboxWithItem(items, seg);
-      if (!r) return [];
-      const numBbox = findNumericNeighbor(items, r.item, numVal ?? null);
-      return numBbox ? [r.bbox, numBbox] : [r.bbox];
+    // --- Caso 1: nessun "+" ---
+    if (rawSegments.length <= 1) {
+      const r = await findSingleBboxWithItem(items, rawText);
+      if (!r) return null;
+      const numBbox = findNumericNeighbor(items, r.item, fieldValue ?? null);
+      const bboxes  = numBbox ? [r.bbox, numBbox] : [r.bbox];
+      return { kind: 'single', bboxes, segmentNames: [rawText] };
     }
 
-    // Nessun "+": ricerca singola
-    if (segments.length <= 1) {
-      const bboxes = await bboxPair(rawText, fieldValue);
-      if (bboxes.length === 0) return null;
-      return { kind: 'single', bboxes };
+    // --- Caso 2: formula calcolata (segmenti contengono cifre) ---
+    if (isCalculatedFormula(rawSegments)) {
+      const firstSeg = rawSegments[0];
+      const nameOnly = segmentDisplayName(firstSeg);
+      const lookupSeg = nameOnly.length >= 3 ? nameOnly : firstSeg;
+      const r = await findSingleBboxWithItem(items, lookupSeg);
+      if (!r) return null;
+      const numBbox = findNumericNeighbor(items, r.item, fieldValue ?? null);
+      const bboxes  = numBbox ? [r.bbox, numBbox] : [r.bbox];
+      // segmentNames: nomi leggibili di tutti i componenti della formula
+      const segNames = rawSegments.map(segmentDisplayName).filter(Boolean);
+      return { kind: 'formula', bboxes, segmentNames: segNames };
     }
 
-    if (isCalculatedFormula(segments)) {
-      // Formula calcolata: evidenzia solo il primo segmento (nome voce senza cifre)
-      const firstSeg = segments[0];
-      const nameOnly = firstSeg.replace(/[\d.,]+/g, '').replace(/\s+/g, ' ').trim();
-      const bboxes   = await bboxPair(nameOnly.length >= 3 ? nameOnly : firstSeg, fieldValue);
-      if (bboxes.length === 0) return null;
-      return { kind: 'formula', bboxes };
-    }
+    // --- Caso 3: somma di righe (multi-sum) ---
+    // Cerca SOLO le etichette, NO i numeri affiancati (colonna sconosciuta).
+    // Il valore totale mostrato nell'input è quello estratto dall'AI ed è corretto.
+    const bboxes:       BBox[]   = [];
+    const segmentNames: string[] = [];
 
-    // Somma di righe: per ogni segmento (nome puro) cerca label + numero
-    // I bbox vengono interleaved: [label0, num0, label1, num1, ...]
-    // così i colori si alternano correttamente per voce
-    const results: BBox[] = [];
-    for (const seg of segments) {
-      const r = await findSingleBboxWithItem(items, seg);
+    for (const seg of rawSegments) {
+      // Rimuovi cifre residue dal nome voce per la ricerca
+      const cleanSeg = seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
+      const lookupSeg = cleanSeg.length >= 3 ? cleanSeg : seg;
+
+      const r = await findSingleBboxWithItem(items, lookupSeg);
       if (!r) continue;
-      const isDupLabel = results.some(b =>
+
+      // Evita duplicati per y (stessa riga)
+      const isDup = bboxes.some(b =>
         Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2
       );
-      if (isDupLabel) continue;
-      // Aggiungi label bbox
-      results.push(r.bbox);
-      // Aggiungi numero sulla stessa riga (senza fieldValue: la somma non corrisponde a un singolo numero)
-      const numBbox = findNumericNeighbor(items, r.item, null);
-      if (numBbox) results.push(numBbox);
+      if (isDup) continue;
+
+      bboxes.push(r.bbox);
+      segmentNames.push(cleanSeg || seg);
     }
 
-    if (results.length === 0) return null;
-    return { kind: 'multi-sum', bboxes: results };
+    if (bboxes.length === 0) return null;
+    return { kind: 'multi-sum', bboxes, segmentNames };
   } catch {
     return null;
   }
@@ -300,11 +282,9 @@ const NumericInput: React.FC<NumericInputProps> = ({
     e.target.select();
     onFocus?.();
   };
-
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setDisplayValue(e.target.value.replace(/[^0-9.,-]/g, ''));
   };
-
   const handleBlur = () => {
     isEditing.current = false;
     if (displayValue.trim() === '') {
@@ -332,29 +312,24 @@ const NumericInput: React.FC<NumericInputProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Colori per highlight
-// Per multi-sum: ogni COPPIA (label+numero) usa lo stesso colore.
-// Per single/formula: un solo colore (indice 0).
+// Colori highlight
+// single/formula: indice 0 per tutti i bbox (label + numero)
+// multi-sum: ogni label-bbox ha il suo colore
 // ---------------------------------------------------------------------------
 const MULTI_HIGHLIGHT_COLORS = [
-  { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.85)'  },
-  { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.85)'  },
-  { fill: 'rgba(245,158,11,0.28)',  stroke: 'rgba(245,158,11,0.85)'  },
-  { fill: 'rgba(239,68,68,0.28)',   stroke: 'rgba(239,68,68,0.85)'   },
-  { fill: 'rgba(168,85,247,0.28)',  stroke: 'rgba(168,85,247,0.85)'  },
+  { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.90)'  },
+  { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  },
+  { fill: 'rgba(245,158,11,0.28)',  stroke: 'rgba(245,158,11,0.90)'  },
+  { fill: 'rgba(239,68,68,0.28)',   stroke: 'rgba(239,68,68,0.90)'   },
+  { fill: 'rgba(168,85,247,0.28)',  stroke: 'rgba(168,85,247,0.90)'  },
 ];
 
-// Per multi-sum i bbox arrivano a coppie [label0, num0, label1, num1, ...]
-// colorIndex(i) = Math.floor(i / 2) assegna lo stesso colore a label e numero
-function bboxColorIndex(idx: number, isMultiSum: boolean): number {
-  return isMultiSum ? Math.floor(idx / 2) : 0;
-}
-
 interface ActiveHighlight {
-  page: number;
-  bboxes: BBox[];
-  color: string;
-  isMultiSum: boolean;
+  page:         number;
+  bboxes:       BBox[];
+  segmentNames: string[];   // nomi delle voci (1 per single/formula, N per multi-sum)
+  color:        string;
+  isMultiSum:   boolean;
 }
 
 const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -364,7 +339,7 @@ function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 &&
 // PdfViewer
 // ---------------------------------------------------------------------------
 interface PdfViewerProps {
-  file: File;
+  file:      File;
   highlight: ActiveHighlight | null;
 }
 
@@ -401,20 +376,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (hl && hl.page === page && hl.bboxes.length > 0) {
       hl.bboxes.forEach((bbox, idx) => {
         if (isBboxEmpty(bbox)) return;
-        const colorIdx = bboxColorIndex(idx, hl.isMultiSum);
+        // multi-sum: ogni bbox è una voce distinta → colore per indice
+        // single/formula: bbox[0]=label, bbox[1]=numero → stesso colore (idx 0)
+        const colorIdx = hl.isMultiSum ? idx : 0;
         const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
         const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
         const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
-        const rx = Math.min(ax, bx);
-        const ry = Math.min(ay, by);
-        const rw = Math.abs(bx - ax);
-        const rh = Math.abs(by - ay);
         ctx.save();
         ctx.fillStyle   = colors.fill;
-        ctx.fillRect(rx, ry, rw, rh);
+        ctx.fillRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
         ctx.strokeStyle = colors.stroke;
         ctx.lineWidth   = 2;
-        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.strokeRect(Math.min(ax,bx), Math.min(ay,by), Math.abs(bx-ax), Math.abs(by-ay));
         ctx.restore();
       });
     }
@@ -425,9 +398,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     doRender(seq);
   }, [doRender]);
 
-  const goToPage = useCallback((page: number) => {
-    currentPageRef.current = page;
-    setCurrentPage(page);
+  const goToPage = useCallback((p: number) => {
+    currentPageRef.current = p;
+    setCurrentPage(p);
     requestRender();
   }, [requestRender]);
 
@@ -458,12 +431,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [highlight]);
 
-  const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
+  const visibleBboxes   = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
+  const segmentNames    = highlight?.segmentNames ?? [];
 
-  // Per la legenda in fondo al viewer mostriamo solo le coppie (ogni 2 bbox = 1 voce)
+  // Legenda: multi-sum → 1 riga per voce con nome; single/formula → "Evidenziato"
   const legendItems = highlight?.isMultiSum
-    ? visibleBboxes.filter((_, i) => i % 2 === 0)   // solo i label bbox (indici pari)
-    : visibleBboxes.slice(0, 1);                     // single/formula: 1 sola voce
+    ? visibleBboxes.map((_, i) => ({
+        colorIdx: i % MULTI_HIGHLIGHT_COLORS.length,
+        name:     segmentNames[i] ?? `Voce ${i + 1}`,
+      }))
+    : visibleBboxes.length > 0
+      ? [{ colorIdx: 0, name: segmentNames[0] ?? 'Evidenziato' }]
+      : [];
 
   return (
     <>
@@ -479,25 +458,23 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           >Succ &#8250;</button>
         </div>
       </div>
+
       <div className="flex-1 overflow-y-auto flex justify-center p-4">
         <div className="relative shadow-2xl">
           <canvas ref={canvasRef} className="block" />
         </div>
       </div>
+
       {legendItems.length > 0 && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-3 flex-wrap">
-          {legendItems.map((_, legendIdx) => (
-            <span key={legendIdx} className="flex items-center gap-1">
+          {legendItems.map((item, i) => (
+            <span key={i} className="flex items-center gap-1">
               <span
                 className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[
-                  bboxColorIndex(legendIdx * 2, highlight!.isMultiSum) % MULTI_HIGHLIGHT_COLORS.length
-                ].stroke }}
+                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[item.colorIdx].stroke }}
               />
-              <span className="text-xs text-slate-500">
-                {highlight!.isMultiSum ? `Voce ${legendIdx + 1}` : 'Evidenziato'}
-                {' '}&middot; pag. {highlight!.page}
-              </span>
+              <span className="text-xs text-slate-600 font-medium">{item.name}</span>
+              <span className="text-xs text-slate-400">&middot; pag. {highlight!.page}</span>
             </span>
           ))}
         </div>
@@ -506,6 +483,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Componente principale DataVerification
 // ---------------------------------------------------------------------------
 interface Props {
   files: File[];
@@ -534,7 +513,10 @@ const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
   { key: 'fondoRischiOneri',     label: 'Fondo Rischi e Oneri' },
 ];
 
-const CHECKLIST_LABELS: { key: 'debitiGSE' | 'accantonamenti' | 'riduzioniRicavi' | 'contenziosi'; label: string }[] = [
+const CHECKLIST_LABELS: {
+  key: 'debitiGSE' | 'accantonamenti' | 'riduzioniRicavi' | 'contenziosi';
+  label: string;
+}[] = [
   { key: 'debitiGSE',       label: 'Debiti iscritti verso GSE nello SP' },
   { key: 'accantonamenti',  label: 'Accantonamenti Fondo Rischi extraprofitti' },
   { key: 'riduzioniRicavi', label: 'Riduzioni ricavi per effetto della norma' },
@@ -546,6 +528,22 @@ const HIGHLIGHT_COLORS = [
   'rgba(16,185,129,0.35)',
   'rgba(245,158,11,0.35)',
 ];
+
+// Ritorna il kind dal solo rawText (senza aprire il PDF)
+function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
+  if (!rawText) return 'single';
+  const segments = rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(Boolean);
+  if (segments.length <= 1) return 'single';
+  return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
+}
+
+// Nomi leggibili dei segmenti per il badge Σ (senza cifre residue)
+function segmentNamesFromRawText(rawText: string): string[] {
+  return rawText
+    .split(/\s*\+\s*/)
+    .map(s => s.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim())
+    .filter(Boolean);
+}
 
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
@@ -572,28 +570,37 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
     if (field?.bbox && field?.page) {
-      setActiveHighlight({ page: field.page, bboxes: [field.bbox], color, isMultiSum: false });
+      setActiveHighlight({
+        page: field.page, bboxes: [field.bbox],
+        segmentNames: [field.rawText ?? ''], color, isMultiSum: false,
+      });
       return;
     }
 
     if (field?.page && field.value === null) {
-      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color, isMultiSum: false });
+      setActiveHighlight({
+        page: field.page, bboxes: [EMPTY_BBOX],
+        segmentNames: [], color, isMultiSum: false,
+      });
       return;
     }
 
     if (field?.page && field?.rawText && files[fileIdx]) {
-      setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color, isMultiSum: false });
+      // Navigazione immediata, highlight placeholder
+      setActiveHighlight({
+        page: field.page, bboxes: [EMPTY_BBOX],
+        segmentNames: [], color, isMultiSum: false,
+      });
       try {
         const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-        // Passa il valore numerico del campo per il match preciso del numero
         const result = await findBboxByText(doc, field.page, field.rawText, field.value as number | null);
         if (!result) return;
-        const isMultiSum = result.kind === 'multi-sum';
         setActiveHighlight({
-          page:      field.page,
-          bboxes:    result.bboxes,
+          page:         field.page,
+          bboxes:       result.bboxes,
+          segmentNames: result.segmentNames,
           color,
-          isMultiSum,
+          isMultiSum:   result.kind === 'multi-sum',
         });
       } catch {
         // lascia navigate-only
@@ -604,16 +611,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     setActiveHighlight(null);
   }, [files, getPdfDoc]);
 
-  function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
-    if (!rawText) return 'single';
-    const segments = rawText
-      .split(/\s*\+\s*/)
-      .map(s => s.trim())
-      .filter(Boolean);
-    if (segments.length <= 1) return 'single';
-    return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
-  }
-
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
@@ -622,7 +619,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     });
   };
 
-  const tabLabels = ['Importo GSE', ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`)];
+  const tabLabels = [
+    'Importo GSE',
+    ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`),
+  ];
   const tabColors = [
     'border-purple-500 text-purple-700 bg-purple-50',
     'border-blue-500 text-blue-700 bg-blue-50',
@@ -640,23 +640,30 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
   return (
     <div className="flex h-[calc(100vh-80px)] gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white">
+
+      {/* ---- PANNELLO SINISTRO ---- */}
       <div className="w-2/5 flex flex-col border-r border-slate-200 overflow-hidden">
+
+        {/* Tab bar */}
         <div className="flex border-b border-slate-200 bg-slate-50">
-          {tabLabels.map((label, i) => (
-            <button key={i} onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
+          {tabLabels.map((lbl, i) => (
+            <button key={i}
+              onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
               className={`flex-1 py-3 px-2 text-xs font-semibold border-b-2 transition-colors ${
                 activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]}`}>
-              {label}
+              {lbl}
             </button>
           ))}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
+
+          {/* Tab 0 — Importo GSE */}
           {activeTab === 0 && (
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-                Inserisci l'importo residuo da restituire al GSE per l'assolvimento dell'obbligo
-                extraprofitti derivante dalla vendita dell'energia elettrica (art. 15-bis D.L. 4/2022).
+                Inserisci l&apos;importo residuo da restituire al GSE per l&apos;assolvimento dell&apos;obbligo
+                extraprofitti derivante dalla vendita dell&apos;energia elettrica (art. 15-bis D.L. 4/2022).
               </p>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">
                 Ammontare residuo GSE (&euro;)
@@ -670,38 +677,37 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 />
               </div>
               {data.gseResidual?.rawText && (
-                <p className="mt-2 text-xs text-slate-400 italic">Testo estratto: "{data.gseResidual.rawText}"</p>
+                <p className="mt-2 text-xs text-slate-400 italic">Testo estratto: &ldquo;{data.gseResidual.rawText}&rdquo;</p>
               )}
             </div>
           )}
 
+          {/* Tab 1+ — Bilancio anno */}
           {activeTab >= 1 && (() => {
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
             if (!year) return null;
-
             return (
               <div className="space-y-3">
                 <p className="text-xs text-slate-500 mb-1">
-                  Verifica e correggi i dati estratti dal bilancio.
-                  Clicca su un campo per evidenziare il testo nel documento a destra.
+                  Verifica e correggi i dati estratti. Clicca su un campo per evidenziare la voce nel PDF.
                 </p>
 
+                {/* Anno */}
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
                     value={year.year ?? ''}
-                    onChange={e => {
-                      setData(prev => {
-                        const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
-                        next.yearsData[yearIdx].year = e.target.value;
-                        return next;
-                      });
-                    }}
+                    onChange={e => setData(prev => {
+                      const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
+                      next.yearsData[yearIdx].year = e.target.value;
+                      return next;
+                    })}
                   />
                 </div>
 
+                {/* Campi KPI */}
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
@@ -711,35 +717,49 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
                   const kind      = matchKindFromRawText(field?.rawText);
                   const showSigma = kind === 'multi-sum';
-                  const numSegs   = field?.rawText
-                    ? field.rawText.split(/\s*\+\s*/).filter(Boolean).length
-                    : 0;
+                  // Nomi leggibili dei segmenti per il tooltip del badge
+                  const segNames  = field?.rawText ? segmentNamesFromRawText(field.rawText) : [];
 
                   return (
                     <div key={key as string}>
-                      <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
+                      <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
                         {label}
+
+                        {/* Badge pagina */}
                         {hasPage && (
                           <span className={`inline-flex items-center gap-0.5 text-[9px] font-medium ${badgeColor}`}>
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
-                        {showSigma && (
-                          <span className="ml-1 text-[9px] font-semibold text-indigo-500 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5">
-                            \u03a3 {numSegs} voci
+
+                        {/* Badge Σ con tooltip dei nomi voce */}
+                        {showSigma && segNames.length > 0 && (
+                          <span
+                            title={`Somma di: ${segNames.join(' + ')}`}
+                            className="ml-1 text-[9px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5 cursor-help"
+                          >
+                            &Sigma; {segNames.join(' + ')}
                           </span>
                         )}
+
+                        {/* Badge f(x) per formule calcolate */}
                         {!showSigma && kind === 'formula' && (
-                          <span className="ml-1 text-[9px] font-semibold text-teal-600 bg-teal-50 border border-teal-200 rounded px-1 py-0.5">
+                          <span
+                            title={`Formula: ${segNames.join(' + ')}`}
+                            className="ml-1 text-[9px] font-semibold text-teal-600 bg-teal-50 border border-teal-200 rounded px-1 py-0.5 cursor-help"
+                          >
                             f(x)
                           </span>
                         )}
+
+                        {/* Badge non disponibile */}
                         {isUnavail && (
                           <span className="ml-1 text-[9px] font-semibold text-amber-500 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
                             non disponibile
                           </span>
                         )}
                       </label>
+
                       <NumericInput
                         value={field?.value}
                         isUnavailable={isUnavail}
@@ -753,6 +773,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
+
                       {field?.rawText && (
                         <p className="mt-0.5 text-[10px] text-slate-400 italic">
                           &laquo;{cleanRawText(field.rawText)}&raquo;
@@ -762,6 +783,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   );
                 })}
 
+                {/* Checklist GSE */}
                 <div className="mt-6 pt-4 border-t border-slate-200">
                   <div className="flex items-center gap-2 mb-3">
                     <FileSearch className="w-4 h-4 text-indigo-500" />
@@ -809,6 +831,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           })()}
         </div>
 
+        {/* Bottone approva */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
           <button onClick={() => onApprove(data)}
             className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl transition-colors shadow-sm">
@@ -818,6 +841,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
         </div>
       </div>
 
+      {/* ---- PANNELLO DESTRO — PDF viewer ---- */}
       <div className="w-3/5 flex flex-col bg-slate-100 overflow-hidden">
         {!pdfFile ? (
           <>
