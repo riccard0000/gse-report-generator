@@ -11,7 +11,6 @@ interface Props {
   onApprove: (updatedData: ExtractedData) => void;
 }
 
-// Campi da mostrare per ogni bilancio con etichetta leggibile
 const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
   { key: 'ricavi',               label: 'Ricavi' },
   { key: 'ebitda',               label: 'EBITDA' },
@@ -23,21 +22,20 @@ const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
   { key: 'totaleDebiti',         label: 'Totale Debiti' },
   { key: 'debitiBancheBreve',    label: 'Debiti Banche Breve' },
   { key: 'debitiBancheML',       label: 'Debiti Banche M/L' },
-  { key: 'disponibilitaLiquide', label: 'Disponibilità Liquide' },
+  { key: 'disponibilitaLiquide', label: 'Disponibilit\u00e0 Liquide' },
   { key: 'creditiEntro12Mesi',   label: 'Crediti Entro 12 Mesi' },
   { key: 'rimanenze',            label: 'Rimanenze' },
   { key: 'attivoCircolante',     label: 'Attivo Circolante' },
-  { key: 'passivitaCorrenti',    label: 'Passività Correnti' },
+  { key: 'passivitaCorrenti',    label: 'Passivit\u00e0 Correnti' },
   { key: 'debitiTributari',      label: 'Debiti Tributari' },
   { key: 'debitiPrevidenziali',  label: 'Debiti Previdenziali' },
   { key: 'fondoRischiOneri',     label: 'Fondo Rischi e Oneri' },
 ];
 
-// Colori highlight per i campi attivi
 const HIGHLIGHT_COLORS = [
-  'rgba(59,130,246,0.35)',  // blu – bilancio 1
-  'rgba(16,185,129,0.35)', // verde – bilancio 2
-  'rgba(245,158,11,0.35)', // ambra – bilancio 3
+  'rgba(59,130,246,0.35)',
+  'rgba(16,185,129,0.35)',
+  'rgba(245,158,11,0.35)',
 ];
 
 interface ActiveHighlight {
@@ -46,102 +44,168 @@ interface ActiveHighlight {
   color: string;
 }
 
-export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
-  const [data, setData] = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
-  // 0 = tab GSE, 1-3 = bilanci
-  const [activeTab, setActiveTab] = useState(0);
-  const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
+// ─────────────────────────────────────────────────────────────
+// Componente PDF isolato: riceve il File come prop e usa
+// key={pdfFileIndex} nel parent per forzare il remount completo
+// ogni volta che si cambia tab. In questo modo non c'\u00e8 mai
+// disallineamento tra pdfDocRef e il file visualizzato.
+// ─────────────────────────────────────────────────────────────
+interface PdfViewerProps {
+  file: File;
+  highlight: ActiveHighlight | null;
+}
+
+const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [totalPages, setTotalPages]   = useState(1);
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
-  const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  const pdfScrollRef = useRef<HTMLDivElement>(null);
+  const pdfDocRef  = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  // token di cancellazione: se cambia file (remount) le promise in volo vengono ignorate
+  const cancelRef  = useRef(false);
 
-  // File PDF attivo: per tab GSE non mostriamo PDF, per tab bilancio mostriamo il file corrispondente
-  const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
-  const pdfFile = pdfFileIndex !== null ? files[pdfFileIndex] : null;
-
-  // Carica il PDF ogni volta che cambia il file attivo
+  // Carica il PDF una sola volta al mount (il remount via key garantisce file corretto)
   useEffect(() => {
-    if (!pdfFile) {
-      pdfDocRef.current = null;
-      setTotalPages(1);
-      setCurrentPage(1);
-      return;
-    }
+    cancelRef.current = false;
+    pdfDocRef.current = null;
+    setCurrentPage(1);
+    setTotalPages(1);
+
     const load = async () => {
-      const arrayBuffer = await pdfFile.arrayBuffer();
+      const arrayBuffer = await file.arrayBuffer();
+      if (cancelRef.current) return;
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      if (cancelRef.current) return;
       pdfDocRef.current = pdf;
       setTotalPages(pdf.numPages);
       setCurrentPage(1);
     };
     load();
-  }, [pdfFile]);
 
-  // Renderizza la pagina corrente + eventuale highlight
-  const renderPage = useCallback(async (pageNum: number, highlight: ActiveHighlight | null) => {
-    const pdf = pdfDocRef.current;
+    return () => { cancelRef.current = true; };
+  }, [file]);
+
+  const renderPage = useCallback(async (pageNum: number, hl: ActiveHighlight | null) => {
+    const pdf    = pdfDocRef.current;
     const canvas = canvasRef.current;
     const overlay = overlayRef.current;
     if (!pdf || !canvas || !overlay) return;
 
-    const page = await pdf.getPage(pageNum);
-    const scale = 1.5;
+    const page     = await pdf.getPage(pageNum);
+    const scale    = 1.5;
     const viewport = page.getViewport({ scale });
 
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    overlay.width = viewport.width;
+    canvas.width   = viewport.width;
+    canvas.height  = viewport.height;
+    overlay.width  = viewport.width;
     overlay.height = viewport.height;
 
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
 
-    // Disegna highlight sull'overlay
     const ctx = overlay.getContext('2d')!;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-    if (highlight && highlight.page === pageNum) {
-      const { x0, y0, x1, y1 } = highlight.bbox;
-      // Le coordinate bbox del PDF sono in spazio PDF (origine in basso a sinistra)
-      // Convertiamo con il viewport
+    if (hl && hl.page === pageNum) {
+      const { x0, y0, x1, y1 } = hl.bbox;
       const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
       const [bx, by] = viewport.convertToViewportPoint(x1, y0);
       const rx = Math.min(ax, bx);
       const ry = Math.min(ay, by);
       const rw = Math.abs(bx - ax);
       const rh = Math.abs(by - ay);
-
-      ctx.fillStyle = highlight.color;
+      ctx.fillStyle   = hl.color;
       ctx.fillRect(rx, ry, rw, rh);
-      ctx.strokeStyle = highlight.color.replace('0.35', '0.9');
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = hl.color.replace('0.35', '0.9');
+      ctx.lineWidth   = 2;
       ctx.strokeRect(rx, ry, rw, rh);
     }
   }, []);
 
+  // Salta alla pagina dell'highlight quando arriva
   useEffect(() => {
-    renderPage(currentPage, activeHighlight);
-  }, [currentPage, activeHighlight, renderPage, pdfFile]);
-
-  // Quando l'utente mette il focus su un campo con bbox, salta alla pagina e mostra highlight
-  const handleFieldFocus = (field: ExtractedField<any> | null, colorIndex: number) => {
-    if (!field || !field.bbox || !field.page) {
-      setActiveHighlight(null);
-      return;
+    if (highlight?.page && highlight.page !== currentPage) {
+      setCurrentPage(highlight.page);
     }
-    const highlight: ActiveHighlight = {
-      page: field.page,
-      bbox: field.bbox,
-      color: HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0],
-    };
-    setActiveHighlight(highlight);
-    setCurrentPage(field.page);
+  }, [highlight]);
+
+  useEffect(() => {
+    if (pdfDocRef.current) renderPage(currentPage, highlight);
+  }, [currentPage, highlight, renderPage]);
+
+  // Ritenta il render quando il doc finisce di caricarsi
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pdfDocRef.current) {
+        renderPage(currentPage, highlight);
+        clearInterval(interval);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <>
+      {/* Header navigazione pagine */}
+      <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
+        <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={currentPage <= 1}
+            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >‹ Prec</button>
+          <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
+          <button
+            disabled={currentPage >= totalPages}
+            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >Succ ›</button>
+        </div>
+      </div>
+
+      {/* Canvas PDF */}
+      <div className="flex-1 overflow-y-auto flex justify-center p-4">
+        <div className="relative shadow-2xl">
+          <canvas ref={canvasRef} className="block" />
+          <canvas
+            ref={overlayRef}
+            className="absolute inset-0 pointer-events-none"
+            style={{ mixBlendMode: 'multiply' }}
+          />
+        </div>
+      </div>
+
+      {/* Legenda highlight */}
+      {highlight && (
+        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
+          <span
+            className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+            style={{ backgroundColor: highlight.color.replace('0.35', '0.7') }}
+          />
+          <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// Componente principale DataVerification
+// ─────────────────────────────────────────────────────────────
+export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
+  const [data, setData]               = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
+  const [activeTab, setActiveTab]     = useState(0);
+  const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
+
+  // Indice del file PDF da mostrare (null = tab GSE)
+  const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
+  const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
+
+  const handleFieldFocus = (field: ExtractedField<any> | null, colorIndex: number) => {
+    if (!field?.bbox || !field?.page) { setActiveHighlight(null); return; }
+    setActiveHighlight({ page: field.page, bbox: field.bbox, color: HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0] });
   };
 
-  // Aggiorna un campo di un anno
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
@@ -172,9 +236,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   return (
     <div className="flex h-[calc(100vh-80px)] gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white">
 
-      {/* ═══════════════════════════════════════════════════
-          COLONNA SINISTRA — Tab + Form
-      ═══════════════════════════════════════════════════ */}
+      {/* COLONNA SINISTRA */}
       <div className="w-2/5 flex flex-col border-r border-slate-200 overflow-hidden">
 
         {/* Tab bar */}
@@ -184,9 +246,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               key={i}
               onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
               className={`flex-1 py-3 px-2 text-xs font-semibold border-b-2 transition-colors ${
-                activeTab === i
-                  ? tabColors[i]
-                  : 'border-transparent ' + tabColorsInactive[i]
+                activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]
               }`}
             >
               {label}
@@ -194,10 +254,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           ))}
         </div>
 
-        {/* Contenuto form — scrollabile */}
+        {/* Form scrollabile */}
         <div className="flex-1 overflow-y-auto p-5">
 
-          {/* ── TAB 0: Importo GSE ── */}
+          {/* TAB 0: Importo GSE */}
           {activeTab === 0 && (
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
@@ -211,17 +271,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">€</span>
                 <input
-                  type="number"
-                  min={0}
-                  step={0.01}
+                  type="number" min={0} step={0.01}
                   className="w-full pl-8 pr-3 py-3 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition"
                   value={data.gseResidual?.value ?? ''}
-                  onChange={e =>
-                    setData(prev => ({
-                      ...prev,
-                      gseResidual: { ...prev.gseResidual, value: parseFloat(e.target.value) || 0 },
-                    }))
-                  }
+                  onChange={e => setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: parseFloat(e.target.value) || 0 } }))}
                   placeholder="0.00"
                 />
               </div>
@@ -231,10 +284,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             </div>
           )}
 
-          {/* ── TAB 1-3: Bilanci ── */}
+          {/* TAB 1-3: Bilanci */}
           {activeTab >= 1 && (() => {
-            const yearIdx = activeTab - 1;
-            const year = data.yearsData[yearIdx];
+            const yearIdx  = activeTab - 1;
+            const year     = data.yearsData[yearIdx];
             const colorIdx = yearIdx;
             if (!year) return null;
             return (
@@ -243,7 +296,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   Verifica e correggi i dati estratti dal bilancio.
                   Clicca su un campo per evidenziare il testo nel documento a destra.
                 </p>
-                {/* Anno */}
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
@@ -258,10 +310,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                     }}
                   />
                 </div>
-
-                {/* Tutti i campi finanziari */}
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field = year[key] as ExtractedField<number>;
+                  const field  = year[key] as ExtractedField<number>;
                   const hasBbox = !!field?.bbox && !!field?.page;
                   return (
                     <div key={key as string}>
@@ -274,12 +324,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         )}
                       </label>
                       <input
-                        type="number"
-                        step={0.01}
+                        type="number" step={0.01}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          hasBbox
-                            ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
-                            : 'border-slate-200 focus:ring-slate-300'
+                          hasBbox ? 'border-slate-200 focus:ring-blue-300 cursor-pointer' : 'border-slate-200 focus:ring-slate-300'
                         }`}
                         value={field?.value ?? ''}
                         onFocus={() => handleFieldFocus(field, colorIdx)}
@@ -297,7 +344,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           })()}
         </div>
 
-        {/* Bottone Conferma — sempre visibile in fondo */}
+        {/* Bottone Conferma */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
           <button
             onClick={() => onApprove(data)}
@@ -309,37 +356,16 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════
-          COLONNA DESTRA — Visualizzatore PDF
-      ═══════════════════════════════════════════════════ */}
+      {/* COLONNA DESTRA — PDF Viewer */}
       <div className="w-3/5 flex flex-col bg-slate-100 overflow-hidden">
-
-        {/* Header PDF con navigazione pagine */}
-        <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
-          <span className="text-xs font-medium text-slate-600 truncate max-w-xs">
-            {pdfFile ? pdfFile.name : 'Seleziona un bilancio per visualizzare il documento'}
-          </span>
-          {pdfFile && (
-            <div className="flex items-center gap-2">
-              <button
-                disabled={currentPage <= 1}
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-              >‹ Prec</button>
-              <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
-              <button
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-              >Succ ›</button>
+        {!pdfFile ? (
+          <>
+            <div className="px-4 py-2 bg-white border-b border-slate-200">
+              <span className="text-xs font-medium text-slate-400">
+                Seleziona un bilancio per visualizzare il documento
+              </span>
             </div>
-          )}
-        </div>
-
-        {/* Area PDF */}
-        <div ref={pdfScrollRef} className="flex-1 overflow-y-auto flex justify-center p-4">
-          {!pdfFile ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400">
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
               <svg className="w-16 h-16 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                   d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -347,31 +373,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               <p className="text-sm font-medium">Nessun documento selezionato</p>
               <p className="text-xs mt-1">Seleziona uno dei tab Bilancio per visualizzare il PDF</p>
             </div>
-          ) : (
-            <div className="relative shadow-2xl">
-              {/* Canvas PDF base */}
-              <canvas ref={canvasRef} className="block" />
-              {/* Canvas overlay per gli highlight — sovrapposto esattamente */}
-              <canvas
-                ref={overlayRef}
-                className="absolute inset-0 pointer-events-none"
-                style={{ mixBlendMode: 'multiply' }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Legenda highlight attivo */}
-        {activeHighlight && (
-          <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
-            <span
-              className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-              style={{ backgroundColor: activeHighlight.color.replace('0.35', '0.7') }}
-            />
-            <span className="text-xs text-slate-500">
-              Testo evidenziato a pagina {activeHighlight.page}
-            </span>
-          </div>
+          </>
+        ) : (
+          // key={pdfFileIndex} forza il remount completo di PdfViewer ad ogni cambio tab
+          // garantendo che pdfDocRef punti SEMPRE al file corretto
+          <PdfViewer key={pdfFileIndex} file={pdfFile} highlight={activeHighlight} />
         )}
       </div>
     </div>
