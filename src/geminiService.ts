@@ -12,22 +12,24 @@ import { calculateKpis } from './kpiCalculator';
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// ─── Chiave API da variabile d'ambiente Vite ───────────────────────────────
+// Tipo inline compatibile con pdfjs-dist v4 (TextItem non e esportato come named type)
+type PdfTextItem = { str: string; transform: number[] };
+
+// ─── Chiave API da variabile d'ambiente Vite ────────────────────────────────
 const getApiKey = (): string => {
   const key = import.meta.env.VITE_GITHUB_TOKEN as string;
   if (!key) throw new Error('Variabile VITE_GITHUB_TOKEN non configurata.');
   return key;
 };
 
-// ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y)
-const extractStructuredText = (items: pdfjsLib.TextItem[]): string => {
-  const rows: Record<number, { str: string; transform: number[] }[]> = {};
+// ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y) ─
+const extractStructuredText = (items: PdfTextItem[]): string => {
+  const rows: Record<number, PdfTextItem[]> = {};
 
   items.forEach((item) => {
-    if (!('str' in item)) return;
-    const y = Math.round((item as pdfjsLib.TextItem).transform[5]);
+    const y = Math.round(item.transform[5]);
     if (!rows[y]) rows[y] = [];
-    rows[y].push(item as pdfjsLib.TextItem);
+    rows[y].push(item);
   });
 
   return Object.keys(rows)
@@ -41,7 +43,7 @@ const extractStructuredText = (items: pdfjsLib.TextItem[]): string => {
     .join('\n');
 };
 
-// ─── Estrazione testo da un singolo PDF ───────────────────────────────────
+// ─── Estrazione testo da un singolo PDF ────────────────────────────────────
 const extractTextFromPdf = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -50,13 +52,18 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const pageText = extractStructuredText(content.items as pdfjsLib.TextItem[]);
+    // Filtra solo gli item con str e transform (TextItem vs TextMarkedContent)
+    const textItems = content.items.filter(
+      (item): item is PdfTextItem =>
+        'str' in item && 'transform' in item
+    );
+    const pageText = extractStructuredText(textItems);
     fullText += `\n--- PAGINA ${pageNum} ---\n${pageText}\n`;
   }
   return fullText;
 };
 
-// ─── Chiamata centralizzata all'API OpenRouter ────────────────────────────
+// ─── Chiamata centralizzata all'API OpenRouter ──────────────────────────────
 const callOpenRouter = async (
   model: string,
   messages: object[],
@@ -94,7 +101,7 @@ const callOpenRouter = async (
   return data.choices?.[0]?.message?.content ?? '';
 };
 
-// ─── Export: Estrazione dati dai PDF ─────────────────────────────────────
+// ─── Export: Estrazione dati dai PDF ──────────────────────────────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
@@ -126,14 +133,13 @@ export const extractDataFromPdfs = async (
   }
 };
 
-// ─── Export: Generazione narrativa tecnica (con KPI deterministici) ───────
+// ─── Export: Generazione narrativa tecnica (con KPI deterministici) ─────────
 export const generateNarrative = async (
   data: ExtractedData,
   onProgress?: (msg: string) => void
 ): Promise<NarrativeData> => {
   onProgress?.('Calcolo KPI deterministici...');
 
-  // Prendi l'ultimo anno disponibile per i KPI
   const lastYear = data.yearsData[data.yearsData.length - 1];
   const kpis = calculateKpis(lastYear, data.gseResidual?.value ?? null);
 
@@ -160,7 +166,6 @@ export const generateNarrative = async (
   try {
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned) as NarrativeData;
-    // Normalizza esito
     if (!['SOSTENIBILE', 'CAUTELA', 'RISCHIO ELEVATO'].includes(parsed.esito)) {
       parsed.esito = 'CAUTELA';
     }
