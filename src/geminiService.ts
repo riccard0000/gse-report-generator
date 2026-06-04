@@ -15,6 +15,12 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 // Tipo inline compatibile con pdfjs-dist v4 (TextItem non e esportato come named type)
 type PdfTextItem = { str: string; transform: number[] };
 
+const isPdfTextItem = (item: unknown): item is PdfTextItem =>
+  typeof item === 'object' &&
+  item !== null &&
+  'str' in item &&
+  'transform' in item;
+
 // ─── Chiave API da variabile d'ambiente Vite ────────────────────────────────
 const getApiKey = (): string => {
   const key = import.meta.env.VITE_GITHUB_TOKEN as string;
@@ -52,11 +58,8 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    // Filtra solo gli item con str e transform (TextItem vs TextMarkedContent)
-    const textItems = content.items.filter(
-      (item): item is PdfTextItem =>
-        'str' in item && 'transform' in item
-    );
+    // Cast a unknown[] per permettere il type guard su tipo locale
+    const textItems = (content.items as unknown[]).filter(isPdfTextItem);
     const pageText = extractStructuredText(textItems);
     fullText += `\n--- PAGINA ${pageNum} ---\n${pageText}\n`;
   }
