@@ -5,7 +5,6 @@ import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// Tipo locale per gli item testuali di pdfjs-dist (non esportato dal pacchetto)
 interface PdfTextItem {
   str: string;
   transform: number[];
@@ -61,9 +60,6 @@ function cleanRawText(raw: string, maxLen = 60): string {
   return s;
 }
 
-/**
- * Cerca rawText nel contenuto testuale della pagina e restituisce il bbox del match.
- */
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
@@ -210,14 +206,18 @@ interface PdfViewerProps {
 const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages]   = useState(1);
-  const canvasRef  = useRef<HTMLCanvasElement>(null);
-  const overlayRef = useRef<HTMLCanvasElement>(null);
-  const pdfDocRef  = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  const cancelRef  = useRef(false);
+  // Un solo canvas — l'highlight viene disegnato sopra il PDF nello stesso contesto
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  const cancelRef = useRef(false);
+  // Memorizza il viewport dell'ultima pagina renderizzata per ridisegnare solo l'hl
+  const lastViewportRef = useRef<pdfjsLib.PageViewport | null>(null);
+  const lastPageNumRef  = useRef<number>(0);
 
   useEffect(() => {
     cancelRef.current = false;
     pdfDocRef.current = null;
+    lastViewportRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
     const load = async () => {
@@ -233,36 +233,53 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelRef.current = true; };
   }, [file]);
 
+  /**
+   * Disegna l'highlight sul canvas usando il viewport già memorizzato,
+   * senza ri-renderizzare il PDF (evita flickering).
+   */
+  const drawHighlight = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport, pageNum: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+    // Rimuove eventuale highlight precedente ridisegnando solo il rettangolo pulito
+    // Non è necessario: il PDF viene ridisegnato intero in renderPage, poi chiamiamo drawHighlight
+    if (!hl || hl.page !== pageNum) return;
+    const { x0, y0, x1, y1 } = hl.bbox;
+    if (x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0) return; // bbox vuoto = solo navigazione pagina
+    const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
+    const [bx, by] = viewport.convertToViewportPoint(x1, y0);
+    const rx = Math.min(ax, bx);
+    const ry = Math.min(ay, by);
+    const rw = Math.abs(bx - ax);
+    const rh = Math.abs(by - ay);
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle   = hl.color.replace(/,[\d.]+\)$/, ',1)');
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = hl.color.replace(/,[\d.]+\)$/, ',0.9)');
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.restore();
+  }, []);
+
   const renderPage = useCallback(async (pageNum: number, hl: ActiveHighlight | null) => {
     const pdf    = pdfDocRef.current;
     const canvas = canvasRef.current;
-    const overlay = overlayRef.current;
-    if (!pdf || !canvas || !overlay) return;
+    if (!pdf || !canvas) return;
     const page     = await pdf.getPage(pageNum);
     const scale    = 1.5;
     const viewport = page.getViewport({ scale });
     canvas.width   = viewport.width;
     canvas.height  = viewport.height;
-    overlay.width  = viewport.width;
-    overlay.height = viewport.height;
+    // Render PDF sul canvas
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-    const ctx = overlay.getContext('2d')!;
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
-    if (hl && hl.page === pageNum) {
-      const { x0, y0, x1, y1 } = hl.bbox;
-      const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
-      const [bx, by] = viewport.convertToViewportPoint(x1, y0);
-      const rx = Math.min(ax, bx);
-      const ry = Math.min(ay, by);
-      const rw = Math.abs(bx - ax);
-      const rh = Math.abs(by - ay);
-      ctx.fillStyle   = hl.color;
-      ctx.fillRect(rx, ry, rw, rh);
-      ctx.strokeStyle = hl.color.replace('0.35', '0.9');
-      ctx.lineWidth   = 2;
-      ctx.strokeRect(rx, ry, rw, rh);
-    }
-  }, []);
+    // Memorizza viewport e pagina per usi successivi
+    lastViewportRef.current = viewport;
+    lastPageNumRef.current  = pageNum;
+    // Disegna highlight sopra il PDF nello stesso canvas
+    drawHighlight(hl, viewport, pageNum);
+  }, [drawHighlight]);
 
   useEffect(() => {
     if (highlight?.page && highlight.page !== currentPage) setCurrentPage(highlight.page);
@@ -295,14 +312,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       </div>
       <div className="flex-1 overflow-y-auto flex justify-center p-4">
         <div className="relative shadow-2xl">
+          {/* Canvas singolo: niente overlay, niente mixBlendMode */}
           <canvas ref={canvasRef} className="block" />
-          <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none" style={{ mixBlendMode: 'multiply' }} />
         </div>
       </div>
       {highlight && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
           <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-            style={{ backgroundColor: highlight.color.replace('0.35', '0.7') }} />
+            style={{ backgroundColor: highlight.color.replace(/,[\d.]+\)$/, ',0.7)') }} />
           <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
         </div>
       )}
