@@ -14,12 +14,14 @@
 
 import { ExtractedData, NarrativeData } from './types';
 
+// Nomi reali dei file nel repo (con spazi, come depositati)
 export const MOCK_FILE_NAMES = [
-  'OUT_LASTBIL_IC01637000892-2022-GEOSOL.pdf',
-  'OUT_LASTBIL_IC01637000892-2023-GEOSOL.pdf',
-  'OUT_LASTBIL_IC01637000892-2024-GEOSOL.pdf',
+  'OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf',
+  'OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf',
+  'OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf',
 ];
 
+// Stessi nomi URL-encoded per le chiamate fetch/GitHub Pages
 const PDF_FILENAMES = [
   'OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
   'OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
@@ -27,7 +29,10 @@ const PDF_FILENAMES = [
 ];
 
 export function getMockPdfUrls(): string[] {
-  const base = import.meta.env.BASE_URL;
+  // import.meta.env.BASE_URL è '/gse-report-generator/' in produzione, '/' in locale.
+  // Normalizziamo per evitare doppio slash o slash mancante.
+  const rawBase = import.meta.env.BASE_URL ?? '/';
+  const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
   return PDF_FILENAMES.map((f) => `${base}${f}`);
 }
 
@@ -65,7 +70,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       totaleAttivo:         { value: 3525717, page: 3,  rawText: "Totale attivo 3.525.717 3.604.643",                                 bbox: { x0: 91.3, y0: 505.4, x1: 511.5, y1: 513.2 } },
       patrimonioNetto:      { value: 1361443, page: 3,  rawText: "Totale patrimonio netto 1.361.443 1.246.347",                       bbox: { x0: 97.7, y0: 407.5, x1: 511.5, y1: 415.3 } },
       totaleDebiti:         { value: 2079084, page: 3,  rawText: "Totale debiti 2.079.084 2.343.807",                                 bbox: { x0: 97.7, y0: 334.4, x1: 511.5, y1: 342.2 } },
-      // quota breve trovata; quota M/L non indicata separatamente nel documento
       debitiBancheBreve:    { value: 370237,  page: 11, rawText: "MUTUO BAPR 1.870.237 quota breve 370.237",                          bbox: null },
       debitiBancheML:       { value: null,    page: 11, rawText: "MUTUO BAPR quota M/L non indicata separatamente",                   bbox: null },
       disponibilitaLiquide: { value: 254282,  page: 3,  rawText: "IV - Disponibilita liquide 254.282 259.343",                        bbox: { x0: 97.7, y0: 529.8, x1: 511.5, y1: 537.5 } },
@@ -90,7 +94,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       totaleAttivo:         { value: 3320008, page: 3,  rawText: "Totale attivo 3.320.008 3.525.717",                                 bbox: { x0: 91.3, y0: 517.5, x1: 511.5, y1: 525.2 } },
       patrimonioNetto:      { value: 2129423, page: 3,  rawText: "Totale patrimonio netto 2.129.423 1.361.443",                       bbox: { x0: 97.7, y0: 407.5, x1: 511.5, y1: 415.3 } },
       totaleDebiti:         { value: 1125299, page: 3,  rawText: "Totale debiti 1.125.299 2.079.084",                                 bbox: { x0: 97.7, y0: 334.4, x1: 511.5, y1: 342.2 } },
-      // mutuo BAPR estinto nel 2023 — valore reale 0 (non null)
       debitiBancheBreve:    { value: 0,       page: 12, rawText: "MUTUO BAPR estinto nel 2023",                                      bbox: null },
       debitiBancheML:       { value: 0,       page: 12, rawText: "MUTUO BAPR estinto nel 2023",                                      bbox: null },
       disponibilitaLiquide: { value: 53216,   page: 3,  rawText: "IV - Disponibilita liquide 53.216 254.282",                         bbox: { x0: 97.7, y0: 542.0, x1: 511.5, y1: 549.8 } },
