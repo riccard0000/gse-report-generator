@@ -4,7 +4,7 @@ import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
 import { DataVerification } from './components/DataVerification';
 import { ExtractedData, NarrativeData } from './types';
-import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, MOCK_PDF_URLS } from './mockData';
+import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls } from './mockData';
 import { Zap, AlertTriangle, FlaskConical } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
@@ -40,10 +40,9 @@ export default function App() {
 
   /**
    * DEMO MODE:
-   * 1. Fetcha i 3 PDF statici dalla root del sito (pubblici, Vite li serve)
+   * 1. Fetcha i 3 PDF statici serviti sotto BASE_URL (es. /gse-report-generator/)
    * 2. Li converte in oggetti File sintetici
    * 3. Carica MOCK_EXTRACTED_DATA senza chiamare OpenRouter
-   * Il viewer PDF funziona esattamente come con file caricati dall'utente.
    */
   const handleLoadDemo = useCallback(async () => {
     setError(null);
@@ -52,8 +51,9 @@ export default function App() {
     setProgress('Caricamento PDF di esempio...');
 
     try {
+      const pdfUrls = getMockPdfUrls();
       const demoFiles = await Promise.all(
-        MOCK_PDF_URLS.map(async (url, i) => {
+        pdfUrls.map(async (url, i) => {
           const res = await fetch(url);
           if (!res.ok) throw new Error(`PDF demo non trovato: ${url}`);
           const blob = await res.blob();
@@ -155,7 +155,6 @@ export default function App() {
                 </div>
               ) : (
                 <div className="mt-4 flex flex-col gap-3">
-                  {/* Bottone principale */}
                   <button
                     onClick={handleAnalyze}
                     disabled={files.length !== REQUIRED_FILES}
@@ -172,7 +171,6 @@ export default function App() {
                     <div className="flex-1 h-px bg-slate-200" />
                   </div>
 
-                  {/* Bottone demo */}
                   <button
                     onClick={handleLoadDemo}
                     className="w-full py-2.5 px-6 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
