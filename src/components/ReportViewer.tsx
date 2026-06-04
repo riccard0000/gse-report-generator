@@ -14,107 +14,231 @@ const fmt = (v: number | null | undefined): string => {
   return v.toLocaleString('it-IT');
 };
 
-const fmtKpi = (v: string): string => v;
-
 const esitoColor = (esito: string): string => {
   if (esito === 'SOSTENIBILE') return '#1a7f37';
   if (esito === 'RISCHIO ELEVATO') return '#b91c1c';
-  return '#b45309';
+  return '#92400e';
+};
+
+const esitoBg = (esito: string): string => {
+  if (esito === 'SOSTENIBILE') return '#dcfce7';
+  if (esito === 'RISCHIO ELEVATO') return '#fee2e2';
+  return '#fef3c7';
+};
+
+const esitoBorder = (esito: string): string => {
+  if (esito === 'SOSTENIBILE') return '#86efac';
+  if (esito === 'RISCHIO ELEVATO') return '#fca5a5';
+  return '#fcd34d';
+};
+
+// Colora il valore KPI in base a soglie note
+const kpiStyle = (key: string, val: string): string => {
+  const n = parseFloat(val.replace(',', '.'));
+  if (isNaN(n)) return '';
+  const good = '#166534', warn = '#92400e', bad = '#991b1b';
+  switch (key) {
+    case 'currentRatio': return n >= 1.2 ? good : n >= 0.8 ? warn : bad;
+    case 'quickRatio':   return n >= 1.0 ? good : n >= 0.6 ? warn : bad;
+    case 'cashRatio':    return n >= 0.3 ? good : n >= 0.1 ? warn : bad;
+    case 'autonomiaFinanziaria': return n >= 0.4 ? good : n >= 0.2 ? warn : bad;
+    case 'debtEquity':   return n <= 1.5 ? good : n <= 3.0 ? warn : bad;
+    case 'leverage':     return n <= 2.5 ? good : n <= 4.0 ? warn : bad;
+    case 'pfnEbitda':    return n <= 3.0 ? good : n <= 5.0 ? warn : bad;
+    case 'interestCoverage': return n >= 5 ? good : n >= 2 ? warn : bad;
+    case 'ros':          return n >= 0.05 ? good : n >= 0.01 ? warn : bad;
+    default: return '';
+  }
 };
 
 const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
-  const company = data.companyName?.value ?? 'N.D.';
-  const piva = data.vatNumber?.value ?? 'N.D.';
+  const company = String(data.companyName?.value ?? 'N.D.');
+  const piva = String(data.vatNumber?.value ?? 'N.D.');
   const residuo = data.gseResidual?.value ?? null;
   const years = data.yearsData;
   const lastYear = years[years.length - 1];
   const kpis = calculateKpis(lastYear, residuo);
   const annoKpi = lastYear?.year ?? 'N.D.';
+  const esitoStr = narrative.esito ?? 'CAUTELA';
+  const generatedDate = new Date().toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
 
-  const escHtml = (s: string) =>
-    s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   const checklist = data.checklist;
 
-  const checkRow = (label: string, item: { presente: boolean; dettaglio: string }) =>
-    `<tr><td>${label}</td><td>${item.presente ? 'Presente' : 'Assente'}</td><td>${escHtml(item.dettaglio || '—')}</td></tr>`;
-
-  const bilRow = (label: string, key: keyof typeof lastYear) => {
-    const cells = years
-      .map((y) => {
-        const f = y[key] as { value: number | null } | null;
-        return `<td>${fmt(f?.value ?? null)}</td>`;
-      })
-      .join('');
-    return `<tr><td>${label}</td>${cells}</tr>`;
+  const checkRow = (label: string, item: { presente: boolean; dettaglio: string }) => {
+    const icon = item.presente ? '&#9888;' : '&#10003;';
+    const iconColor = item.presente ? '#b91c1c' : '#166534';
+    const bg = item.presente ? '#fff5f5' : '#f0fdf4';
+    return `<tr style="background-color:${bg}">
+      <td>${label}</td>
+      <td style="font-weight:bold;color:${iconColor};text-align:center">${icon} ${item.presente ? 'Presente' : 'Assente'}</td>
+      <td style="font-size:9.5pt;color:#374151">${esc(item.dettaglio || '&mdash;')}</td>
+    </tr>`;
   };
 
-  const yearHeaders = years
-    .map((y) => `<th style="width:${Math.floor(60 / years.length)}%">${y.year} (&euro;)</th>`)
-    .join('');
+  // Righe zebrate per la tabella bilanci, con evidenziazione sezioni principali
+  const sectionKeys: Record<string, boolean> = {
+    ricavi: true, totaleAttivo: true, patrimonioNetto: true, attivoCircolante: true
+  };
+  let bilIdx = 0;
+  const bilRow = (label: string, key: keyof typeof lastYear) => {
+    bilIdx++;
+    const isSection = sectionKeys[key as string];
+    const zebra = bilIdx % 2 === 0 ? '#f8fafc' : '#ffffff';
+    const bg = isSection ? '#eef4fb' : zebra;
+    const fw = isSection ? 'font-weight:bold;' : '';
+    const cells = years.map((y) => {
+      const f = y[key] as { value: number | null } | null;
+      return `<td style="text-align:right;${fw}">${fmt(f?.value ?? null)}</td>`;
+    }).join('');
+    return `<tr style="background-color:${bg}"><td style="${fw}">${label}</td>${cells}</tr>`;
+  };
 
-  const esitoStr = narrative.esito ?? 'CAUTELA';
+  const yearWidth = Math.floor(55 / years.length);
+  const yearHeaders = years.map((y) =>
+    `<th style="width:${yearWidth}%;text-align:right">${y.year} (&euro;)</th>`
+  ).join('');
+
+  // Righe KPI con colore semaforo
+  const kpiRows: [string, string, string, string][] = [
+    ['currentRatio',        'Current ratio',        'Attivo circ. / Pass. correnti',                          kpis.currentRatio],
+    ['quickRatio',          'Quick ratio',           '(Attivo circ. &minus; Rimanenze) / Pass. correnti',      kpis.quickRatio],
+    ['cashRatio',           'Cash ratio',            'Disp. liquide / Pass. correnti',                         kpis.cashRatio],
+    ['autonomiaFinanziaria','Autonomia finanziaria', 'Patrimonio netto / Totale Attivo',                       kpis.autonomiaFinanziaria],
+    ['debtEquity',          'Debt / Equity',         'Totale Debiti / Patrimonio netto',                       kpis.debtEquity],
+    ['leverage',            'Leverage',              'Totale Attivo / Patrimonio netto',                       kpis.leverage],
+    ['pfnEbitda',           'PFN / EBITDA',          '(Deb. Breve + Deb. M/L &minus; Disp. liq.) / EBITDA',   kpis.pfnEbitda],
+    ['interestCoverage',    'Interest coverage',     'EBIT / Interessi passivi',                               kpis.interestCoverage],
+    ['ros',                 'ROS',                   'EBIT / Ricavi',                                          kpis.ros],
+  ];
+
+  const kpiTableRows = kpiRows.map(([key, label, formula, val], i) => {
+    const color = kpiStyle(key, val);
+    const bg = i % 2 === 0 ? '#ffffff' : '#f8fafc';
+    const valStyle = color ? `font-weight:bold;color:${color}` : '';
+    return `<tr style="background-color:${bg}">
+      <td style="font-weight:bold">${label}</td>
+      <td style="font-size:9.5pt;color:#6b7280">${formula}</td>
+      <td style="text-align:right;${valStyle}">${val}</td>
+    </tr>`;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
-<title>Report GSE &ndash; ${escHtml(String(company))}</title>
+<title>Report GSE &ndash; ${esc(company)}</title>
 <!--[if mso]>
 <style>
-table { width:100% !important; }
+table { width:100% !important; border-collapse:collapse; }
 td, th { word-break:normal !important; overflow-wrap:break-word !important; }
 </style>
 <![endif]-->
 <style>
-body { font-family:Calibri,Arial,sans-serif; font-size:11pt; color:#1d2733; margin:1.5cm 1.5cm; line-height:1.5; }
-h1 { font-size:16pt; font-weight:bold; color:#123b67; margin-top:0; margin-bottom:4px; }
-h2 { font-size:12pt; font-weight:bold; color:#123b67; margin-top:16px; margin-bottom:4px; border-bottom:1px solid #123b67; padding-bottom:2px; }
-h3 { font-size:11pt; font-weight:bold; color:#1d2733; margin-top:10px; margin-bottom:3px; }
-p { font-size:11pt; margin:0 0 7px 0; }
-.muted { font-size:9.5pt; color:#5c6b7a; }
-table { border-collapse:collapse; width:100%; table-layout:fixed; margin:6px 0 14px 0; font-size:10pt; font-family:Calibri,Arial,sans-serif; }
-th { font-weight:bold; font-size:10pt; padding:6px 8px; border:1px solid #888; text-align:left; vertical-align:top; background-color:#dce6f1; color:#1d2733; }
-td { padding:5px 8px; border:1px solid #aaa; vertical-align:top; font-size:10pt; word-wrap:break-word; overflow-wrap:break-word; }
-.footer { margin-top:20px; border-top:1px solid #aaa; padding-top:6px; font-size:9pt; color:#888; }
+body { font-family:Calibri,Arial,sans-serif; font-size:11pt; color:#1d2733; margin:0; padding:0; line-height:1.55; background-color:#f1f5f9; }
+.page { background-color:#ffffff; max-width:900px; margin:0 auto; padding:0; }
+
+/* Header */
+.doc-header { background-color:#0f3460; padding:28px 32px 22px 32px; }
+.doc-header-label { font-size:9pt; color:#93c5fd; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px; }
+.doc-header h1 { font-size:17pt; font-weight:bold; color:#ffffff; margin:0 0 6px 0; }
+.doc-header-sub { font-size:9.5pt; color:#bfdbfe; margin:0; }
+
+/* Meta bar */
+.meta-bar { background-color:#1e3a5f; padding:12px 32px; display:table; width:100%; }
+.meta-cell { display:table-cell; font-size:9.5pt; color:#e2e8f0; padding-right:24px; }
+.meta-cell strong { color:#ffffff; }
+
+/* Esito badge */
+.esito-badge { display:inline-block; font-size:10pt; font-weight:bold; padding:4px 14px; border:2px solid ${esitoBorder(esitoStr)}; background-color:${esitoBg(esitoStr)}; color:${esitoColor(esitoStr)}; }
+
+/* Body content */
+.content { padding:24px 32px; }
+
+/* Section headers */
+h2 { font-size:11.5pt; font-weight:bold; color:#0f3460; margin:22px 0 6px 0; padding:6px 10px; background-color:#eef4fb; border-left:4px solid #0f3460; }
+h3 { font-size:10.5pt; font-weight:bold; color:#1e3a5f; margin:14px 0 4px 0; }
+p { font-size:10.5pt; margin:0 0 8px 0; color:#374151; }
+.muted { font-size:9pt; color:#6b7280; }
+
+/* Tables */
+table { border-collapse:collapse; width:100%; table-layout:fixed; margin:6px 0 16px 0; font-size:10pt; font-family:Calibri,Arial,sans-serif; }
+th { font-weight:bold; font-size:10pt; padding:7px 10px; border:1px solid #94a3b8; text-align:left; vertical-align:middle; background-color:#0f3460; color:#ffffff; }
+td { padding:5px 10px; border:1px solid #cbd5e1; vertical-align:top; font-size:10pt; word-wrap:break-word; overflow-wrap:break-word; }
+
+/* Narrative box */
+.narrative-box { background-color:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #3b82f6; padding:12px 14px; margin-bottom:10px; }
+.narrative-box h3 { margin:0 0 5px 0; color:#1e40af; font-size:10pt; }
+.narrative-box p { margin:0; font-size:10pt; color:#374151; }
+
+/* Conclusione box */
+.conclusione-box { background-color:${esitoBg(esitoStr)}; border:1px solid ${esitoBorder(esitoStr)}; border-left:4px solid ${esitoColor(esitoStr)}; padding:12px 14px; margin-bottom:10px; }
+.conclusione-box h3 { margin:0 0 5px 0; color:${esitoColor(esitoStr)}; font-size:10pt; }
+.conclusione-box p { margin:0; font-size:10pt; color:#1d2733; }
+
+/* Copertura box */
+.copertura-note { background-color:#fffbeb; border:1px solid #fcd34d; padding:8px 12px; font-size:9.5pt; color:#78350f; margin-bottom:12px; }
+
+/* Footer */
+.footer { margin:20px 32px 0 32px; border-top:1px solid #e2e8f0; padding:10px 0 20px 0; font-size:8.5pt; color:#94a3b8; }
 </style>
 </head>
 <body>
+<div class="page">
 
-<p class="muted">Istruttoria economico-finanziaria GSE &middot; Extraprofitti &middot; art. 15-bis D.L. 4/2022</p>
-<h1>Report di sostenibilit&agrave; del recupero credito residuo GSE</h1>
-<p class="muted">Valutazione della capacit&agrave; dell&apos;azienda di assorbire l&apos;esborso richiesto, con analisi dei bilanci, degli indici patrimoniali e degli elementi informativi collegati a GSE ed extraprofitti.</p>
+<!-- HEADER -->
+<div class="doc-header">
+  <div class="doc-header-label">Istruttoria economico-finanziaria &middot; Extraprofitti &middot; art. 15-bis D.L. 4/2022</div>
+  <h1>Report di sostenibilit&agrave; del recupero credito residuo GSE</h1>
+  <p class="doc-header-sub">Valutazione della capacit&agrave; dell&apos;azienda di assorbire l&apos;esborso richiesto &mdash; analisi bilanci, KPI patrimoniali ed elementi GSE/extraprofitti</p>
+</div>
 
-<p>
-  <strong>Societ&agrave;:</strong> ${escHtml(String(company))} &nbsp;
-  <strong>P. IVA:</strong> ${escHtml(String(piva))} &nbsp;
-  <strong>Anno KPI:</strong> ${annoKpi} &nbsp;
-  <strong>Residuo GSE:</strong> &euro; ${fmt(residuo)} &nbsp;
-  <strong>Esito:</strong> <span style="font-weight:bold;color:${esitoColor(esitoStr)}">${esitoStr}</span>
-</p>
+<!-- META BAR -->
+<div class="meta-bar">
+  <div class="meta-cell"><strong>Societ&agrave;:</strong> ${esc(company)}</div>
+  <div class="meta-cell"><strong>P. IVA:</strong> ${esc(piva)}</div>
+  <div class="meta-cell"><strong>Anno KPI:</strong> ${annoKpi}</div>
+  <div class="meta-cell"><strong>Residuo GSE:</strong> &euro; ${fmt(residuo)}</div>
+  <div class="meta-cell"><strong>Esito:</strong> <span class="esito-badge">${esitoStr}</span></div>
+  <div class="meta-cell" style="font-size:8.5pt;color:#94a3b8">Generato il ${generatedDate}</div>
+</div>
 
-<h2>1. Nota sintetica di esito</h2>
-<h3>Analisi Ricavi e Utile</h3>
-<p>${escHtml(narrative.analisiRicavi ?? '')}</p>
-<h3>Analisi della liquidit&agrave;</h3>
-<p>${escHtml(narrative.analisiLiquidita ?? '')}</p>
-<h3>Accantonamenti e rilievi extraprofitti</h3>
-<p>${escHtml(narrative.accantonamenti ?? '')}</p>
-<h3>Conclusione</h3>
-<p>${escHtml(narrative.conclusione ?? '')}</p>
+<div class="content">
 
-<h2>2. Sintesi bilanci &ndash; Ultimi ${years.length} anni</h2>
+<!-- SEZIONE 1: NARRATIVA -->
+<h2>1 &mdash; Nota sintetica di esito</h2>
+
+<div class="narrative-box">
+  <h3>&#128200; Analisi Ricavi e Utile</h3>
+  <p>${esc(narrative.analisiRicavi ?? '')}</p>
+</div>
+
+<div class="narrative-box">
+  <h3>&#128178; Analisi della liquidit&agrave;</h3>
+  <p>${esc(narrative.analisiLiquidita ?? '')}</p>
+</div>
+
+<div class="narrative-box">
+  <h3>&#128203; Accantonamenti e rilievi extraprofitti</h3>
+  <p>${esc(narrative.accantonamenti ?? '')}</p>
+</div>
+
+<div class="conclusione-box">
+  <h3>&#9654; Conclusione &mdash; Esito: ${esitoStr}</h3>
+  <p>${esc(narrative.conclusione ?? '')}</p>
+</div>
+
+<!-- SEZIONE 2: BILANCI -->
+<h2>2 &mdash; Sintesi bilanci &ndash; Ultimi ${years.length} esercizi</h2>
 <table width="100%">
 <thead><tr>
-<th style="width:40%">Voce di bilancio</th>
+<th style="width:45%">Voce di bilancio</th>
 ${yearHeaders}
 </tr></thead>
 <tbody>
-${bilRow('Ricavi', 'ricavi')}
+${bilRow('Ricavi (valore produzione)', 'ricavi')}
 ${bilRow('EBITDA', 'ebitda')}
 ${bilRow('EBIT', 'ebit')}
 ${bilRow('Utile netto', 'utileNetto')}
@@ -135,66 +259,71 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 </tbody>
 </table>
 
-<h2>3. KPI &ndash; Anno ${annoKpi}</h2>
+<!-- SEZIONE 3: KPI -->
+<h2>3 &mdash; KPI sintetici &ndash; Anno ${annoKpi}</h2>
+<p class="muted">I valori sono calcolati con formule deterministiche dai dati estratti. Il colore indica la soglia di riferimento: <span style="color:#166534;font-weight:bold">&#9632; positivo</span> &nbsp; <span style="color:#92400e;font-weight:bold">&#9632; attenzione</span> &nbsp; <span style="color:#991b1b;font-weight:bold">&#9632; critico</span></p>
 <table width="100%">
 <thead><tr>
-<th style="width:28%">Indice</th>
+<th style="width:26%">Indice</th>
 <th style="width:52%">Formula</th>
-<th style="width:20%">Valore</th>
+<th style="width:22%;text-align:right">Valore</th>
 </tr></thead>
-<tbody>
-<tr><td>Current ratio</td><td>Attivo circ. / Pass. correnti</td><td>${fmtKpi(kpis.currentRatio)}</td></tr>
-<tr><td>Quick ratio</td><td>(Attivo circ. &minus; Rimanenze) / Pass. correnti</td><td>${fmtKpi(kpis.quickRatio)}</td></tr>
-<tr><td>Cash ratio</td><td>Disp. liquide / Pass. correnti</td><td>${fmtKpi(kpis.cashRatio)}</td></tr>
-<tr><td>Autonomia finanziaria</td><td>Patrimonio netto / Totale Attivo</td><td>${fmtKpi(kpis.autonomiaFinanziaria)}</td></tr>
-<tr><td>Debt / Equity</td><td>Totale Debiti / Patrimonio netto</td><td>${fmtKpi(kpis.debtEquity)}</td></tr>
-<tr><td>Leverage</td><td>Totale Attivo / Patrimonio netto</td><td>${fmtKpi(kpis.leverage)}</td></tr>
-<tr><td>PFN / EBITDA</td><td>(Deb. Breve + Deb. M/L &minus; Disp. liq.) / EBITDA</td><td>${fmtKpi(kpis.pfnEbitda)}</td></tr>
-<tr><td>Interest coverage</td><td>EBIT / Interessi passivi</td><td>${fmtKpi(kpis.interestCoverage)}</td></tr>
-<tr><td>ROS</td><td>EBIT / Ricavi</td><td>${fmtKpi(kpis.ros)}</td></tr>
-</tbody>
+<tbody>${kpiTableRows}</tbody>
 </table>
 
-<h2>4. Residuo GSE e copertura</h2>
-<p>
-  <strong>Importo residuo GSE:</strong> &euro; ${fmt(residuo)} &nbsp;
-  <strong>Societ&agrave;:</strong> ${escHtml(String(company))} &nbsp;
-  <strong>P. IVA:</strong> ${escHtml(String(piva))} &nbsp;
-  <strong>Fonte:</strong> PDF allegato
-</p>
+<!-- SEZIONE 4: COPERTURA GSE -->
+<h2>4 &mdash; Residuo GSE e indici di copertura</h2>
+<p><strong>Importo residuo GSE:</strong> &euro; ${fmt(residuo)} &nbsp;&nbsp; <strong>Fonte:</strong> PDF allegato &nbsp;&nbsp; <strong>P. IVA:</strong> ${esc(piva)}</p>
 <table width="100%">
 <thead><tr>
-<th style="width:40%">Indice di copertura</th>
-<th style="width:36%">Calcolo</th>
-<th style="width:24%">Valore</th>
+<th style="width:36%">Indice di copertura</th>
+<th style="width:38%">Calcolo</th>
+<th style="width:26%;text-align:right">Valore</th>
 </tr></thead>
 <tbody>
-<tr><td>Cassa / Residuo GSE</td><td>${fmt(lastYear?.disponibilitaLiquide?.value ?? null)} / ${fmt(residuo)}</td><td>${fmtKpi(kpis.cassaResiduo)}</td></tr>
-<tr><td>Attivo circ. / Residuo GSE</td><td>${fmt(lastYear?.attivoCircolante?.value ?? null)} / ${fmt(residuo)}</td><td>${fmtKpi(kpis.attivoCircResiduo)}</td></tr>
-<tr><td>Patrimonio netto / Residuo GSE</td><td>${fmt(lastYear?.patrimonioNetto?.value ?? null)} / ${fmt(residuo)}</td><td>${fmtKpi(kpis.patrimonioResiduo)}</td></tr>
+<tr style="background-color:#ffffff">
+  <td style="font-weight:bold">Cassa / Residuo GSE</td>
+  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.disponibilitaLiquide?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="text-align:right;font-weight:bold">${kpis.cassaResiduo}</td>
+</tr>
+<tr style="background-color:#f8fafc">
+  <td style="font-weight:bold">Attivo circ. / Residuo GSE</td>
+  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.attivoCircolante?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="text-align:right;font-weight:bold">${kpis.attivoCircResiduo}</td>
+</tr>
+<tr style="background-color:#ffffff">
+  <td style="font-weight:bold">Patrimonio netto / Residuo GSE</td>
+  <td style="color:#6b7280;font-size:9.5pt">${fmt(lastYear?.patrimonioNetto?.value ?? null)} / ${fmt(residuo)}</td>
+  <td style="text-align:right;font-weight:bold">${kpis.patrimonioResiduo}</td>
+</tr>
 </tbody>
 </table>
-<p>${escHtml(narrative.commentoCopertura ?? '')}</p>
+<div class="copertura-note">${esc(narrative.commentoCopertura ?? '')}</div>
 
-<h3>Checklist GSE ed extraprofitti</h3>
+<!-- CHECKLIST GSE -->
+<h2>5 &mdash; Checklist GSE ed extraprofitti</h2>
 <table width="100%">
 <thead><tr>
-<th style="width:38%">Voce verificata</th>
-<th style="width:14%">Esito</th>
-<th style="width:48%">Dettaglio riscontrato</th>
+<th style="width:40%">Voce verificata</th>
+<th style="width:16%">Esito</th>
+<th style="width:44%">Dettaglio riscontrato</th>
 </tr></thead>
 <tbody>
-${checkRow('Debiti iscritti verso GSE', checklist.debitiGSE)}
+${checkRow('Debiti iscritti verso GSE nello SP', checklist.debitiGSE)}
 ${checkRow('Accantonamenti Fondo Rischi extraprofitti', checklist.accantonamenti)}
 ${checkRow('Riduzioni ricavi per effetto della norma', checklist.riduzioniRicavi)}
 ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
 </tbody>
 </table>
 
+</div><!-- /content -->
+
 <div class="footer">
-Nota: report generato automaticamente dai documenti allegati. I KPI sono calcolati con formule deterministiche. La narrativa &egrave; generata da AI. Aprire con Word e salvare come .docx per la versione editabile.
+  Report generato automaticamente &mdash; KPI calcolati con formule deterministiche &mdash; Narrativa generata da AI &mdash;
+  Aprire con Microsoft Word e salvare come .docx per la versione editabile. &mdash; ${generatedDate}
 </div>
 
+</div><!-- /page -->
 </body>
 </html>`;
 };
@@ -203,62 +332,64 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const htmlContent = buildHtml(extractedData, narrativeData);
 
-  const handleDownloadHtml = () => {
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
-    a.download = `GSE_Report_${company}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
 
-  // Download come .doc (Word apre HTML .doc nativamente)
   const handleDownloadDocx = () => {
     const blob = new Blob([htmlContent], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
     a.download = `GSE_Report_${company}.doc`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadHtml = () => {
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `GSE_Report_${company}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const esitoStr = narrativeData.esito ?? 'CAUTELA';
+  const badgeBg = esitoStr === 'SOSTENIBILE' ? '#dcfce7' : esitoStr === 'RISCHIO ELEVATO' ? '#fee2e2' : '#fef3c7';
+  const badgeColor = esitoColor(esitoStr);
+
   return (
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-2">
-          <FileText className="w-5 h-5 text-blue-600" />
-          <span className="font-semibold text-slate-800">Report GSE generato</span>
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <FileText className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <div className="font-semibold text-slate-800 text-sm">
+              Report GSE &mdash; {String(extractedData.companyName?.value ?? 'N.D.')}
+            </div>
+            <div className="text-xs text-slate-400">P.IVA {String(extractedData.vatNumber?.value ?? 'N.D.')}</div>
+          </div>
           <span
-            className="ml-2 text-xs font-bold px-2 py-0.5 rounded-full"
-            style={{
-              backgroundColor:
-                narrativeData.esito === 'SOSTENIBILE'
-                  ? '#dcfce7'
-                  : narrativeData.esito === 'RISCHIO ELEVATO'
-                  ? '#fee2e2'
-                  : '#fef3c7',
-              color: esitoColor(narrativeData.esito),
-            }}
+            className="ml-1 text-xs font-bold px-2.5 py-1 rounded-full border"
+            style={{ backgroundColor: badgeBg, color: badgeColor, borderColor: badgeColor }}
           >
-            {narrativeData.esito}
+            {esitoStr}
           </span>
         </div>
         <div className="flex gap-2">
           <button
             onClick={handleDownloadDocx}
-            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
           >
             <Download className="w-4 h-4" />
             Scarica .doc (Word)
           </button>
           <button
             onClick={handleDownloadHtml}
-            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 hover:bg-slate-50 text-slate-600 text-sm rounded-lg transition-colors"
           >
             <Download className="w-4 h-4" />
             .html
@@ -267,12 +398,12 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
       </div>
 
       {/* Preview iframe */}
-      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-white">
+      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
         <iframe
           ref={iframeRef}
           srcDoc={htmlContent}
           className="w-full"
-          style={{ height: '80vh', border: 'none' }}
+          style={{ height: '82vh', border: 'none' }}
           title="Report GSE Preview"
         />
       </div>
