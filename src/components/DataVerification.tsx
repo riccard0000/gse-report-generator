@@ -68,46 +68,66 @@ async function findBboxByText(
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const queryWords = rawText
-      .toLowerCase()
-      .replace(/[^a-z0-9\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length > 2)
-      .slice(0, 4);
-    if (queryWords.length === 0) return null;
+    const items   = content.items as PdfTextItem[];
 
-    const items = content.items as PdfTextItem[];
-    let bestItem: PdfTextItem | null = null;
-    for (const item of items) {
-      const txt = item.str.toLowerCase();
-      const matchCount = queryWords.filter(w => txt.includes(w)).length;
-      if (matchCount >= Math.min(2, queryWords.length)) {
-        bestItem = item;
-        break;
+    // Strategia 1: match esatto su stringa intera (normalizzata)
+    const normalizedQuery = rawText.toLowerCase().replace(/\s+/g, ' ').trim();
+    const exactMatch = items.find(it =>
+      it.str.toLowerCase().replace(/\s+/g, ' ').trim() === normalizedQuery
+    );
+    if (exactMatch) {
+      const tf = exactMatch.transform;
+      return { x0: tf[4], y0: tf[5], x1: tf[4] + exactMatch.width, y1: tf[5] + exactMatch.height };
+    }
+
+    // Strategia 2: parole chiave (solo lettere, lunghezza >= 3, prime 5)
+    const keywords = rawText
+      .toLowerCase()
+      .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 3)
+      .slice(0, 5);
+
+    if (keywords.length > 0) {
+      // cerca item che contiene almeno ceil(keywords.length/2) keyword
+      const threshold = Math.max(1, Math.ceil(keywords.length / 2));
+      let bestItem: PdfTextItem | null = null;
+      let bestCount = 0;
+      for (const item of items) {
+        const txt = item.str.toLowerCase();
+        const count = keywords.filter(w => txt.includes(w)).length;
+        if (count >= threshold && count > bestCount) {
+          bestItem = item;
+          bestCount = count;
+        }
+      }
+      if (bestItem) {
+        const tf = bestItem.transform;
+        return { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height };
+      }
+      // Strategia 3: fallback prima keyword
+      const fallback = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
+      if (fallback) {
+        const tf = fallback.transform;
+        return { x0: tf[4], y0: tf[5], x1: tf[4] + fallback.width, y1: tf[5] + fallback.height };
       }
     }
-    if (!bestItem) {
-      bestItem = items.find(it => it.str.toLowerCase().includes(queryWords[0])) ?? null;
-    }
-    if (!bestItem) return null;
 
-    const tf = bestItem.transform;
-    const x0 = tf[4];
-    const y0 = tf[5];
-    const x1 = x0 + bestItem.width;
-    const y1 = y0 + bestItem.height;
-    return { x0, y0, x1, y1 };
+    return null;
   } catch {
     return null;
   }
 }
 
+// ---------------------------------------------------------------------------
+// NumericInput
+// ---------------------------------------------------------------------------
 interface NumericInputProps {
   value: number | undefined | null;
   onChange: (n: number | null) => void;
   onFocus?: () => void;
   className?: string;
-  isUnavailable?: boolean; // true = dato non disponibile (null semantico)
+  isUnavailable?: boolean;
 }
 
 const NumericInput: React.FC<NumericInputProps> = ({
@@ -131,14 +151,12 @@ const NumericInput: React.FC<NumericInputProps> = ({
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value.replace(/[^0-9.,-]/g, '');
-    setDisplayValue(raw);
+    setDisplayValue(e.target.value.replace(/[^0-9.,-]/g, ''));
   };
 
   const handleBlur = () => {
     isEditing.current = false;
     if (displayValue.trim() === '') {
-      // campo lasciato vuoto: rimane null (n.d.)
       onChange(null);
       setDisplayValue('');
     } else {
@@ -162,6 +180,166 @@ const NumericInput: React.FC<NumericInputProps> = ({
   );
 };
 
+// ---------------------------------------------------------------------------
+// PdfViewer — logica di navigazione completamente riscritta
+//
+// Principi:
+//  - Un'unica funzione imperativa `doRender(page, highlight)` che fa tutto
+//  - `renderSeqRef` annulla render in corso se ne arriva uno più recente
+//  - `highlightRef` sempre aggiornata (niente closure stale)
+//  - `currentPageRef` sempre aggiornata (niente closure stale)
+//  - Nessun useEffect con dipendenze [highlight] o [renderPage]: tutto
+//    viene triggerato esplicitamente tramite `requestRender()`
+// ---------------------------------------------------------------------------
+interface ActiveHighlight {
+  page: number;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+  color: string;
+}
+
+interface PdfViewerProps {
+  file: File;
+  highlight: ActiveHighlight | null;
+}
+
+const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages,  setTotalPages]  = useState(1);
+  const canvasRef       = useRef<HTMLCanvasElement>(null);
+  const pdfDocRef       = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  // ref sempre aggiornate — usate dentro doRender per evitare closure stale
+  const currentPageRef  = useRef(1);
+  const highlightRef    = useRef<ActiveHighlight | null>(null);
+  const renderSeqRef    = useRef(0); // incrementato ad ogni richiesta render
+
+  // Mantieni le ref sincronizzate con lo state/prop
+  useEffect(() => { highlightRef.current = highlight; }, [highlight]);
+  useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
+
+  // Funzione imperativa — legge sempre dalle ref (mai da closure)
+  const doRender = useCallback(async (seq: number) => {
+    const pdf    = pdfDocRef.current;
+    const canvas = canvasRef.current;
+    const page   = currentPageRef.current;
+    const hl     = highlightRef.current;
+    if (!pdf || !canvas) return;
+
+    const pdfPage  = await pdf.getPage(page);
+    if (seq !== renderSeqRef.current) return; // render annullato
+
+    const viewport = pdfPage.getViewport({ scale: 1.5 });
+    canvas.width   = viewport.width;
+    canvas.height  = viewport.height;
+
+    const ctx = canvas.getContext('2d')!;
+    await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+    if (seq !== renderSeqRef.current) return; // render annullato dopo il PDF
+
+    // Disegna highlight sopra il PDF
+    if (hl && hl.page === page) {
+      const { x0, y0, x1, y1 } = hl.bbox;
+      if (!(x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0)) {
+        const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
+        const [bx, by] = viewport.convertToViewportPoint(x1, y0);
+        const rx = Math.min(ax, bx);
+        const ry = Math.min(ay, by);
+        const rw = Math.abs(bx - ax);
+        const rh = Math.abs(by - ay);
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle   = hl.color.replace(/,[\d.]+\)$/, ',1)');
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = hl.color.replace(/,[\d.]+\)$/, ',0.9)');
+        ctx.lineWidth   = 2;
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.restore();
+      }
+    }
+  }, []); // nessuna dipendenza: legge tutto dalle ref
+
+  // Incrementa il numero di sequenza e avvia un nuovo render
+  const requestRender = useCallback(() => {
+    const seq = ++renderSeqRef.current;
+    doRender(seq);
+  }, [doRender]);
+
+  // Naviga a una pagina (aggiorna state + ref + render)
+  const goToPage = useCallback((page: number) => {
+    currentPageRef.current = page;
+    setCurrentPage(page);
+    requestRender();
+  }, [requestRender]);
+
+  // Caricamento file
+  useEffect(() => {
+    pdfDocRef.current = null;
+    currentPageRef.current = 1;
+    setCurrentPage(1);
+    setTotalPages(1);
+    let cancelled = false;
+    (async () => {
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      if (cancelled) return;
+      pdfDocRef.current = pdf;
+      setTotalPages(pdf.numPages);
+      currentPageRef.current = 1;
+      setCurrentPage(1);
+      requestRender();
+    })();
+    return () => { cancelled = true; };
+  }, [file]); // requestRender stabile, ok ometterlo qui
+
+  // Quando arriva un nuovo highlight dall'esterno:
+  // - se serve cambiare pagina, aggiorna la ref + state + render
+  // - altrimenti ri-renderizza solo (per aggiornare/rimuovere il box)
+  useEffect(() => {
+    highlightRef.current = highlight;
+    if (highlight?.page && highlight.page !== currentPageRef.current) {
+      currentPageRef.current = highlight.page;
+      setCurrentPage(highlight.page);
+    }
+    // requestRender legge highlight dalla ref aggiornata
+    requestRender();
+  }, [highlight]); // requestRender stabile
+
+  return (
+    <>
+      <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
+        <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={currentPage <= 1}
+            onClick={() => goToPage(Math.max(1, currentPage - 1))}
+            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >&#8249; Prec</button>
+          <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
+          <button
+            disabled={currentPage >= totalPages}
+            onClick={() => goToPage(Math.min(totalPages, currentPage + 1))}
+            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >Succ &#8250;</button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto flex justify-center p-4">
+        <div className="relative shadow-2xl">
+          <canvas ref={canvasRef} className="block" />
+        </div>
+      </div>
+      {highlight && (
+        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+            style={{ backgroundColor: highlight.color.replace(/,[\d.]+\)$/, ',0.7)') }} />
+          <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Tipi
+// ---------------------------------------------------------------------------
 interface Props {
   files: File[];
   extractedData: ExtractedData;
@@ -202,127 +380,12 @@ const HIGHLIGHT_COLORS = [
   'rgba(245,158,11,0.35)',
 ];
 
-interface ActiveHighlight {
-  page: number;
-  bbox: { x0: number; y0: number; x1: number; y1: number };
-  color: string;
-}
-
-interface PdfViewerProps {
-  file: File;
-  highlight: ActiveHighlight | null;
-}
-
-const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages]   = useState(1);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  const cancelRef = useRef(false);
-
-  useEffect(() => {
-    cancelRef.current = false;
-    pdfDocRef.current = null;
-    setCurrentPage(1);
-    setTotalPages(1);
-    const load = async () => {
-      const arrayBuffer = await file.arrayBuffer();
-      if (cancelRef.current) return;
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      if (cancelRef.current) return;
-      pdfDocRef.current = pdf;
-      setTotalPages(pdf.numPages);
-      setCurrentPage(1);
-    };
-    load();
-    return () => { cancelRef.current = true; };
-  }, [file]);
-
-  const drawHighlight = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport, pageNum: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
-    if (!hl || hl.page !== pageNum) return;
-    const { x0, y0, x1, y1 } = hl.bbox;
-    if (x0 === 0 && y0 === 0 && x1 === 0 && y1 === 0) return;
-    const [ax, ay] = viewport.convertToViewportPoint(x0, y1);
-    const [bx, by] = viewport.convertToViewportPoint(x1, y0);
-    const rx = Math.min(ax, bx);
-    const ry = Math.min(ay, by);
-    const rw = Math.abs(bx - ax);
-    const rh = Math.abs(by - ay);
-    ctx.save();
-    ctx.globalAlpha = 0.35;
-    ctx.fillStyle   = hl.color.replace(/,[\d.]+\)$/, ',1)');
-    ctx.fillRect(rx, ry, rw, rh);
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = hl.color.replace(/,[\d.]+\)$/, ',0.9)');
-    ctx.lineWidth   = 2;
-    ctx.strokeRect(rx, ry, rw, rh);
-    ctx.restore();
-  }, []);
-
-  const renderPage = useCallback(async (pageNum: number, hl: ActiveHighlight | null) => {
-    const pdf    = pdfDocRef.current;
-    const canvas = canvasRef.current;
-    if (!pdf || !canvas) return;
-    const page     = await pdf.getPage(pageNum);
-    const scale    = 1.5;
-    const viewport = page.getViewport({ scale });
-    canvas.width   = viewport.width;
-    canvas.height  = viewport.height;
-    await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-    drawHighlight(hl, viewport, pageNum);
-  }, [drawHighlight]);
-
-  useEffect(() => {
-    if (highlight?.page && highlight.page !== currentPage) setCurrentPage(highlight.page);
-  }, [highlight]);
-
-  useEffect(() => {
-    if (pdfDocRef.current) renderPage(currentPage, highlight);
-  }, [currentPage, highlight, renderPage]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (pdfDocRef.current) { renderPage(currentPage, highlight); clearInterval(interval); }
-    }, 100);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <>
-      <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
-        <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
-        <div className="flex items-center gap-2">
-          <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-          >&#8249; Prec</button>
-          <span className="text-xs text-slate-500">pag. {currentPage} / {totalPages}</span>
-          <button disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-            className="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition"
-          >Succ &#8250;</button>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto flex justify-center p-4">
-        <div className="relative shadow-2xl">
-          <canvas ref={canvasRef} className="block" />
-        </div>
-      </div>
-      {highlight && (
-        <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-2">
-          <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-            style={{ backgroundColor: highlight.color.replace(/,[\d.]+\)$/, ',0.7)') }} />
-          <span className="text-xs text-slate-500">Testo evidenziato a pagina {highlight.page}</span>
-        </div>
-      )}
-    </>
-  );
-};
-
+// ---------------------------------------------------------------------------
+// DataVerification
+// ---------------------------------------------------------------------------
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
-  const [data, setData]               = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
-  const [activeTab, setActiveTab]     = useState(0);
+  const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
+  const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
 
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
@@ -331,11 +394,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const pdfDocCacheRef = useRef<Map<number, pdfjsLib.PDFDocumentProxy>>(new Map());
 
   const getPdfDoc = useCallback(async (fileIdx: number, file: File): Promise<pdfjsLib.PDFDocumentProxy> => {
-    if (pdfDocCacheRef.current.has(fileIdx)) {
-      return pdfDocCacheRef.current.get(fileIdx)!;
-    }
-    const ab  = await file.arrayBuffer();
-    const doc = await pdfjsLib.getDocument({ data: ab }).promise;
+    if (pdfDocCacheRef.current.has(fileIdx)) return pdfDocCacheRef.current.get(fileIdx)!;
+    const doc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
     pdfDocCacheRef.current.set(fileIdx, doc);
     return doc;
   }, []);
@@ -347,29 +407,30 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
+    // Caso 1: bbox già nota — navigazione immediata, nessun await
     if (field?.bbox && field?.page) {
       setActiveHighlight({ page: field.page, bbox: field.bbox, color });
       return;
     }
 
-    // Se value è null (dato n.d.) naviga alla pagina ma non cercare bbox
+    // Caso 2: valore null (n.d.) — naviga alla pagina senza cercare bbox
     if (field?.page && field.value === null) {
       setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
       return;
     }
 
+    // Caso 3: cerca il bbox tramite testo nel PDF
     if (field?.page && field?.rawText && files[fileIdx]) {
-      setActiveHighlight(null);
+      // Imposta subito la pagina (bbox vuoto = solo navigazione, no highlight)
+      // così il viewer si sposta immediatamente senza aspettare la ricerca
+      setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
       try {
         const doc  = await getPdfDoc(fileIdx, files[fileIdx]);
         const bbox = await findBboxByText(doc, field.page, field.rawText);
-        if (bbox) {
-          setActiveHighlight({ page: field.page, bbox, color });
-        } else {
-          setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
-        }
+        // Aggiorna con il bbox trovato (o lascia senza box se non trovato)
+        setActiveHighlight({ page: field.page, bbox: bbox ?? { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
       } catch {
-        setActiveHighlight(null);
+        // lascia il navigate-only già impostato sopra
       }
       return;
     }
@@ -468,11 +529,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 </div>
 
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field       = year[key] as ExtractedField<number>;
-                  const isUnavail   = field?.value === null && !!field?.rawText;
-                  const hasBbox     = !!field?.bbox && !!field?.page;
-                  const hasPage     = !!field?.page;
-                  const badgeColor  = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
+                  const field      = year[key] as ExtractedField<number>;
+                  const isUnavail  = field?.value === null && !!field?.rawText;
+                  const hasBbox    = !!field?.bbox && !!field?.page;
+                  const hasPage    = !!field?.page;
+                  const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
