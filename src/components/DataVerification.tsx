@@ -66,17 +66,14 @@ function cleanRawText(raw: string, maxLen = 60): string {
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
 type MatchResult =
-  | { kind: 'single';    bboxes: [BBox] }
-  | { kind: 'formula';   bboxes: [BBox] }   // formula calcolata: no badge Σ, highlight singolo
-  | { kind: 'multi-sum'; bboxes: BBox[] };  // somma di righe:    badge Σ N voci, highlight multipli
+  | { kind: 'single';    bboxes: BBox[] }  // label + eventuale bbox numerico
+  | { kind: 'formula';   bboxes: BBox[] }  // formula calcolata: no badge Σ
+  | { kind: 'multi-sum'; bboxes: BBox[] }; // somma di righe: badge Σ N voci
 
 // ---------------------------------------------------------------------------
 // Determina se un rawText con "+" rappresenta una formula calcolata
 // (ogni segmento contiene almeno una cifra numerica) oppure una somma
 // di righe del bilancio (i segmenti sono nomi puri senza cifre).
-//
-// Es. formula calcolata:  "EBIT 160.638 + ammortamenti 145.786"
-//     somma di righe:     "Erario c/IRES + IRAP + ritenute"
 // ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
   const withDigits = segments.filter(s => /\d/.test(s)).length;
@@ -84,64 +81,132 @@ function isCalculatedFormula(segments: string[]): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Cerca UN singolo segmento di testo nel PDF e ritorna il suo bbox
+// Cerca UN singolo segmento di testo nel PDF e ritorna il suo bbox + item
 // ---------------------------------------------------------------------------
+async function findSingleBboxWithItem(
+  items: PdfTextItem[],
+  segment: string,
+): Promise<{ bbox: BBox; item: PdfTextItem } | null> {
+  const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!seg) return null;
+
+  let found: PdfTextItem | null = null;
+
+  // Strategia 1: match esatto
+  found = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg) ?? null;
+
+  // Strategia 2: keyword match
+  if (!found) {
+    const keywords = seg
+      .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 3)
+      .slice(0, 5);
+
+    if (keywords.length > 0) {
+      const threshold = Math.max(1, Math.ceil(keywords.length / 2));
+      let bestCount = 0;
+      for (const item of items) {
+        const txt   = item.str.toLowerCase();
+        const count = keywords.filter(w => txt.includes(w)).length;
+        if (count >= threshold && count > bestCount) {
+          found     = item;
+          bestCount = count;
+        }
+      }
+      // Strategia 3: fallback prima keyword
+      if (!found) {
+        found = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
+      }
+    }
+  }
+
+  if (!found) return null;
+  const tf = found.transform;
+  return {
+    bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height },
+    item: found,
+  };
+}
+
+// Wrapper che restituisce solo il bbox (compatibilità con il resto del codice)
 async function findSingleBbox(
   items: PdfTextItem[],
   segment: string,
 ): Promise<BBox | null> {
-  const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!seg) return null;
-
-  // Strategia 1: match esatto
-  const exact = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg);
-  if (exact) {
-    const tf = exact.transform;
-    return { x0: tf[4], y0: tf[5], x1: tf[4] + exact.width, y1: tf[5] + exact.height };
-  }
-
-  // Strategia 2: keyword match (sole lettere >= 3 char, prime 5)
-  const keywords = seg
-    .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 3)
-    .slice(0, 5);
-
-  if (keywords.length > 0) {
-    const threshold = Math.max(1, Math.ceil(keywords.length / 2));
-    let bestItem: PdfTextItem | null = null;
-    let bestCount = 0;
-    for (const item of items) {
-      const txt   = item.str.toLowerCase();
-      const count = keywords.filter(w => txt.includes(w)).length;
-      if (count >= threshold && count > bestCount) {
-        bestItem  = item;
-        bestCount = count;
-      }
-    }
-    if (bestItem) {
-      const tf = bestItem.transform;
-      return { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height };
-    }
-    // Strategia 3: fallback prima keyword
-    const fallback = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
-    if (fallback) {
-      const tf = fallback.transform;
-      return { x0: tf[4], y0: tf[5], x1: tf[4] + fallback.width, y1: tf[5] + fallback.height };
-    }
-  }
-
-  return null;
+  const r = await findSingleBboxWithItem(items, segment);
+  return r ? r.bbox : null;
 }
 
 // ---------------------------------------------------------------------------
-// Cerca nel PDF e restituisce un MatchResult tipizzato
-// — sostituisce la vecchia MultiBboxResult + isFormula flag
+// Cerca il token numerico più vicino a destra dell'etichetta trovata,
+// sulla stessa riga (tolleranza y ±5pt).
+// Nei bilanci XBRL le celle numeriche sono item separati sulla stessa riga.
+// Restituisce il bbox del numero se trovato, null altrimenti.
+// ---------------------------------------------------------------------------
+function findNumericNeighbor(
+  items: PdfTextItem[],
+  labelItem: PdfTextItem,
+  fieldValue: number | null | undefined,
+): BBox | null {
+  const labelTf = labelItem.transform;
+  const labelY  = labelTf[5];          // y0 del label
+  const labelX1 = labelTf[4] + labelItem.width; // bordo destro del label
+  const Y_TOL   = 5;                   // tolleranza riga (pt)
+
+  // Token numerici sulla stessa riga, a destra del label
+  const sameRow = items.filter(it => {
+    const tf = it.transform;
+    const iy = tf[5];
+    const ix = tf[4];
+    return Math.abs(iy - labelY) <= Y_TOL && ix > labelX1;
+  });
+
+  if (sameRow.length === 0) return null;
+
+  // Filtra i token che sembrano numeri (contengono solo cifre, punti, virgole, trattini)
+  const numericTokens = sameRow.filter(it =>
+    /^-?[\d.,]+[-]?$/.test(it.str.trim())
+  );
+
+  const candidates = numericTokens.length > 0 ? numericTokens : sameRow;
+
+  // Se abbiamo il valore numerico del campo, cerchiamo il token che lo contiene
+  if (fieldValue !== null && fieldValue !== undefined) {
+    const absVal  = Math.abs(fieldValue);
+    // Rappresentazioni attese: "56.797" "56797" "56,797"
+    const reprs   = [
+      String(Math.round(absVal)),
+      absVal.toFixed(0),
+    ];
+    const byValue = candidates.find(it => {
+      const s = it.str.replace(/[.,\s-]/g, '');
+      return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
+    });
+    if (byValue) {
+      const tf = byValue.transform;
+      return { x0: tf[4], y0: tf[5], x1: tf[4] + byValue.width, y1: tf[5] + byValue.height };
+    }
+  }
+
+  // Fallback: token numerico più vicino a destra
+  const closest = candidates.reduce((a, b) =>
+    a.transform[4] < b.transform[4] ? a : b
+  );
+  const tf = closest.transform;
+  return { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height };
+}
+
+// ---------------------------------------------------------------------------
+// Cerca nel PDF e restituisce un MatchResult tipizzato.
+// Per ogni etichetta trovata aggiunge anche il bbox del valore numerico
+// sulla stessa riga, così l'utente vede esattamente quale numero è stato usato.
 // ---------------------------------------------------------------------------
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   rawText: string,
+  fieldValue?: number | null,
 ): Promise<MatchResult | null> {
   try {
     const page    = await pdf.getPage(pageNum);
@@ -153,31 +218,51 @@ async function findBboxByText(
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
+    // Helper: bbox etichetta + bbox numero affiancato
+    async function bboxPair(
+      seg: string,
+      numVal?: number | null,
+    ): Promise<BBox[]> {
+      const r = await findSingleBboxWithItem(items, seg);
+      if (!r) return [];
+      const numBbox = findNumericNeighbor(items, r.item, numVal ?? null);
+      return numBbox ? [r.bbox, numBbox] : [r.bbox];
+    }
+
     // Nessun "+": ricerca singola
     if (segments.length <= 1) {
-      const bbox = await findSingleBbox(items, rawText);
-      if (!bbox) return null;
-      return { kind: 'single', bboxes: [bbox] };
+      const bboxes = await bboxPair(rawText, fieldValue);
+      if (bboxes.length === 0) return null;
+      return { kind: 'single', bboxes };
     }
 
     if (isCalculatedFormula(segments)) {
-      // Formula calcolata: cerca solo il nome della voce (primo segmento, senza cifre)
+      // Formula calcolata: evidenzia solo il primo segmento (nome voce senza cifre)
       const firstSeg = segments[0];
       const nameOnly = firstSeg.replace(/[\d.,]+/g, '').replace(/\s+/g, ' ').trim();
-      const bbox = await findSingleBbox(items, nameOnly.length >= 3 ? nameOnly : firstSeg);
-      if (!bbox) return null;
-      return { kind: 'formula', bboxes: [bbox] };
+      const bboxes   = await bboxPair(nameOnly.length >= 3 ? nameOnly : firstSeg, fieldValue);
+      if (bboxes.length === 0) return null;
+      return { kind: 'formula', bboxes };
     }
 
-    // Somma di righe: cerca ogni segmento separatamente
+    // Somma di righe: per ogni segmento (nome puro) cerca label + numero
+    // I bbox vengono interleaved: [label0, num0, label1, num1, ...]
+    // così i colori si alternano correttamente per voce
     const results: BBox[] = [];
     for (const seg of segments) {
-      const bbox = await findSingleBbox(items, seg);
-      if (bbox) {
-        const isDup = results.some(r => Math.abs(r.y0 - bbox.y0) < 2 && Math.abs(r.x0 - bbox.x0) < 2);
-        if (!isDup) results.push(bbox);
-      }
+      const r = await findSingleBboxWithItem(items, seg);
+      if (!r) continue;
+      const isDupLabel = results.some(b =>
+        Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2
+      );
+      if (isDupLabel) continue;
+      // Aggiungi label bbox
+      results.push(r.bbox);
+      // Aggiungi numero sulla stessa riga (senza fieldValue: la somma non corrisponde a un singolo numero)
+      const numBbox = findNumericNeighbor(items, r.item, null);
+      if (numBbox) results.push(numBbox);
     }
+
     if (results.length === 0) return null;
     return { kind: 'multi-sum', bboxes: results };
   } catch {
@@ -247,21 +332,29 @@ const NumericInput: React.FC<NumericInputProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Colori per highlight multipli (multi-sum)
+// Colori per highlight
+// Per multi-sum: ogni COPPIA (label+numero) usa lo stesso colore.
+// Per single/formula: un solo colore (indice 0).
 // ---------------------------------------------------------------------------
 const MULTI_HIGHLIGHT_COLORS = [
-  { fill: 'rgba(59,130,246,0.30)',  stroke: 'rgba(59,130,246,0.85)'  },
-  { fill: 'rgba(16,185,129,0.30)',  stroke: 'rgba(16,185,129,0.85)'  },
-  { fill: 'rgba(245,158,11,0.30)',  stroke: 'rgba(245,158,11,0.85)'  },
-  { fill: 'rgba(239,68,68,0.30)',   stroke: 'rgba(239,68,68,0.85)'   },
-  { fill: 'rgba(168,85,247,0.30)',  stroke: 'rgba(168,85,247,0.85)'  },
+  { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.85)'  },
+  { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.85)'  },
+  { fill: 'rgba(245,158,11,0.28)',  stroke: 'rgba(245,158,11,0.85)'  },
+  { fill: 'rgba(239,68,68,0.28)',   stroke: 'rgba(239,68,68,0.85)'   },
+  { fill: 'rgba(168,85,247,0.28)',  stroke: 'rgba(168,85,247,0.85)'  },
 ];
+
+// Per multi-sum i bbox arrivano a coppie [label0, num0, label1, num1, ...]
+// colorIndex(i) = Math.floor(i / 2) assegna lo stesso colore a label e numero
+function bboxColorIndex(idx: number, isMultiSum: boolean): number {
+  return isMultiSum ? Math.floor(idx / 2) : 0;
+}
 
 interface ActiveHighlight {
   page: number;
   bboxes: BBox[];
   color: string;
-  isMultiSum: boolean; // true solo per multi-sum → mostra legenda "Voce 1, Voce 2..."
+  isMultiSum: boolean;
 }
 
 const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -308,8 +401,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (hl && hl.page === page && hl.bboxes.length > 0) {
       hl.bboxes.forEach((bbox, idx) => {
         if (isBboxEmpty(bbox)) return;
-        // multi-sum → colori distinti per voce; single/formula → indice 0 sempre
-        const colorIdx = hl.isMultiSum ? idx : 0;
+        const colorIdx = bboxColorIndex(idx, hl.isMultiSum);
         const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
         const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
         const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
@@ -368,6 +460,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
 
+  // Per la legenda in fondo al viewer mostriamo solo le coppie (ogni 2 bbox = 1 voce)
+  const legendItems = highlight?.isMultiSum
+    ? visibleBboxes.filter((_, i) => i % 2 === 0)   // solo i label bbox (indici pari)
+    : visibleBboxes.slice(0, 1);                     // single/formula: 1 sola voce
+
   return (
     <>
       <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
@@ -387,16 +484,19 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           <canvas ref={canvasRef} className="block" />
         </div>
       </div>
-      {visibleBboxes.length > 0 && (
+      {legendItems.length > 0 && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-3 flex-wrap">
-          {visibleBboxes.map((_, idx) => (
-            <span key={idx} className="flex items-center gap-1">
-              <span className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+          {legendItems.map((_, legendIdx) => (
+            <span key={legendIdx} className="flex items-center gap-1">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
                 style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[
-                  (highlight?.isMultiSum ? idx : 0) % MULTI_HIGHLIGHT_COLORS.length
-                ].stroke }} />
+                  bboxColorIndex(legendIdx * 2, highlight!.isMultiSum) % MULTI_HIGHLIGHT_COLORS.length
+                ].stroke }}
+              />
               <span className="text-xs text-slate-500">
-                {highlight?.isMultiSum ? `Voce ${idx + 1}` : 'Evidenziato'} &middot; pag. {highlight!.page}
+                {highlight!.isMultiSum ? `Voce ${legendIdx + 1}` : 'Evidenziato'}
+                {' '}&middot; pag. {highlight!.page}
               </span>
             </span>
           ))}
@@ -452,10 +552,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
 
-  // Cache del kind per ogni campo già risolto (key = "yearIdx:fieldKey")
-  // per evitare di ricalcolare il badge al secondo render
-  const matchKindCacheRef = useRef<Map<string, MatchResult['kind']>>(new Map());
-
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
 
@@ -489,7 +585,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], color, isMultiSum: false });
       try {
         const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-        const result = await findBboxByText(doc, field.page, field.rawText);
+        // Passa il valore numerico del campo per il match preciso del numero
+        const result = await findBboxByText(doc, field.page, field.rawText, field.value as number | null);
         if (!result) return;
         const isMultiSum = result.kind === 'multi-sum';
         setActiveHighlight({
@@ -507,12 +604,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     setActiveHighlight(null);
   }, [files, getPdfDoc]);
 
-  // -------------------------------------------------------------------------
-  // matchKind: determina in modo sincrono (solo da rawText, senza PDF)
-  // il kind atteso per il badge — formula non mostra mai Σ
-  // Questa è la stessa logica di isCalculatedFormula usata in findBboxByText
-  // per garantire coerenza senza dover aprire il PDF
-  // -------------------------------------------------------------------------
   function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
     if (!rawText) return 'single';
     const segments = rawText
@@ -618,8 +709,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   const hasPage   = !!field?.page;
                   const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
 
-                  // Badge Σ — usa kind come unica fonte di verità:
-                  // solo 'multi-sum' mostra il badge; 'formula' e 'single' no.
                   const kind      = matchKindFromRawText(field?.rawText);
                   const showSigma = kind === 'multi-sum';
                   const numSegs   = field?.rawText
