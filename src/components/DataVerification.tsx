@@ -1,13 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, FinancialYearData } from '../types';
-import { CheckCircle, ChevronRight } from 'lucide-react';
+import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Formattazione numeri stile italiano
-// ─────────────────────────────────────────────────────────────────────────────
 
 function formatIT(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
@@ -48,26 +44,15 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
-/**
- * Pulisce il rawText estratto dal PDF:
- * - Aggiunge uno spazio prima di ogni sequenza numerica non preceduta da spazio
- * - Normalizza spazi multipli
- * - Tronca a maxLen caratteri con …
- */
 function cleanRawText(raw: string, maxLen = 60): string {
   let s = raw
-    // Spazio prima di un numero (cifra o segno -) non preceduto da spazio o inizio riga
     .replace(/([^\s])(-?\d)/g, '$1 $2')
-    // Normalizza spazi multipli
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
   return s;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NumericInput
-// ─────────────────────────────────────────────────────────────────────────────
 interface NumericInputProps {
   value: number | undefined | null;
   onChange: (n: number) => void;
@@ -118,8 +103,6 @@ const NumericInput: React.FC<NumericInputProps> = ({
   );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 interface Props {
   files: File[];
   extractedData: ExtractedData;
@@ -147,6 +130,13 @@ const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
   { key: 'fondoRischiOneri',     label: 'Fondo Rischi e Oneri' },
 ];
 
+const CHECKLIST_LABELS: { key: 'debitiGSE' | 'accantonamenti' | 'riduzioniRicavi' | 'contenziosi'; label: string }[] = [
+  { key: 'debitiGSE',       label: 'Debiti iscritti verso GSE nello SP' },
+  { key: 'accantonamenti',  label: 'Accantonamenti Fondo Rischi extraprofitti' },
+  { key: 'riduzioniRicavi', label: 'Riduzioni ricavi per effetto della norma' },
+  { key: 'contenziosi',     label: 'Contenziosi / ricorsi al TAR contro GSE' },
+];
+
 const HIGHLIGHT_COLORS = [
   'rgba(59,130,246,0.35)',
   'rgba(16,185,129,0.35)',
@@ -159,9 +149,6 @@ interface ActiveHighlight {
   color: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PdfViewer
-// ─────────────────────────────────────────────────────────────────────────────
 interface PdfViewerProps {
   file: File;
   highlight: ActiveHighlight | null;
@@ -270,9 +257,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DataVerification (main)
-// ─────────────────────────────────────────────────────────────────────────────
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]               = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]     = useState(0);
@@ -308,6 +292,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     'text-slate-500 hover:text-amber-600 hover:bg-amber-50',
   ];
 
+  const checklist = data.checklist;
+
   return (
     <div className="flex h-[calc(100vh-80px)] gap-0 overflow-hidden rounded-2xl border border-slate-200 shadow-sm bg-white">
 
@@ -332,13 +318,13 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
                 Inserisci l'importo residuo da restituire al GSE per l'assolvimento dell'obbligo
-                extraprofitti derivante dalla vendita dell'energia elettrica (art. 15-bis D.L. 4/2022).
+                extraprofitti derivante dalla vendita dell'energia elettrica (art. 15-bis D.L. 4/2022).
               </p>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">
-                Ammontare residuo GSE (€)
+                Ammontare residuo GSE (&euro;)
               </label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">€</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">&euro;</span>
                 <NumericInput
                   value={data.gseResidual?.value}
                   className="w-full pl-8 pr-3 py-3 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition"
@@ -352,7 +338,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             </div>
           )}
 
-          {/* TAB 1-3: Bilanci */}
+          {/* TAB 1-N: Bilanci */}
           {activeTab >= 1 && (() => {
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
@@ -363,6 +349,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   Verifica e correggi i dati estratti dal bilancio.
                   Clicca su un campo per evidenziare il testo nel documento a destra.
                 </p>
+
+                {/* Anno */}
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
@@ -377,6 +365,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                     }}
                   />
                 </div>
+
+                {/* Campi numerici */}
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field   = year[key] as ExtractedField<number>;
                   const hasBbox = !!field?.bbox && !!field?.page;
@@ -401,12 +391,57 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                       />
                       {field?.rawText && (
                         <p className="mt-0.5 text-[10px] text-slate-400 italic">
-                          «{cleanRawText(field.rawText)}»
+                          &laquo;{cleanRawText(field.rawText)}&raquo;
                         </p>
                       )}
                     </div>
                   );
                 })}
+
+                {/* ── Sezione Checklist GSE ── */}
+                <div className="mt-6 pt-4 border-t border-slate-200">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FileSearch className="w-4 h-4 text-indigo-500" />
+                    <span className="text-xs font-bold text-indigo-700 uppercase tracking-wide">Checklist GSE / Extraprofitti</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mb-3 leading-relaxed">
+                    Voci ricercate nel documento dal modello AI. La fonte testuale riporta la citazione letterale trovata nel PDF.
+                  </p>
+                  <div className="space-y-3">
+                    {CHECKLIST_LABELS.map(({ key, label }) => {
+                      const item = checklist[key];
+                      const isPres = item?.presente;
+                      const badgeBg    = isPres ? 'bg-red-50 border-red-200'   : 'bg-emerald-50 border-emerald-200';
+                      const badgeText  = isPres ? 'text-red-700'               : 'text-emerald-700';
+                      const badgeLabel = isPres ? '⚠ Presente'                 : '✓ Assente';
+                      return (
+                        <div key={key} className={`rounded-lg border p-3 ${badgeBg}`}>
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <span className="text-[10px] font-bold text-slate-600 leading-tight">{label}</span>
+                            <span className={`text-[10px] font-bold whitespace-nowrap ${badgeText}`}>{badgeLabel}</span>
+                          </div>
+                          {item?.dettaglio && (
+                            <p className="text-[10px] text-slate-500 mb-1.5 leading-relaxed">{item.dettaglio}</p>
+                          )}
+                          {item?.fonteTestuale && (
+                            <div className="mt-1.5 bg-white/70 border border-slate-200 rounded px-2 py-1.5">
+                              <div className="flex items-center gap-1 mb-0.5">
+                                <FileSearch className="w-2.5 h-2.5 text-slate-400" />
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">
+                                  Fonte{item.page ? ` — pag. ${item.page}` : ''}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-600 italic leading-relaxed">
+                                &ldquo;{item.fonteTestuale}&rdquo;
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
               </div>
             );
           })()}

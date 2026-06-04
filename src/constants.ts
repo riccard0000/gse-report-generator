@@ -45,8 +45,19 @@ Per ciascun valore numerico includi sempre:
 - "page": numero di pagina del PDF
 - "rawText": la riga testuale esatta del documento da cui e stato estratto
 
-Per la CHECKLIST cerca in SP, CE e Nota Integrativa: "GSE", "Gestore Servizi Energetici", "Extraprofitti", "D.L. 4/2022", "art. 15-bis".
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
+
+Per la CHECKLIST cerca in SP, CE e Nota Integrativa le parole chiave: "GSE", "Gestore Servizi Energetici",
+"Extraprofitti", "D.L. 4/2022", "art. 15-bis", "fondo rischi", "accantonamento", "contenzioso", "ricorso", "TAR".
+
+Per ogni voce della checklist:
+- "presente": true se la voce e rilevata nel documento, false se assente
+- "dettaglio": descrizione sintetica del riscontro (max 2 righe), in italiano formale
+- "fonteTestuale": CITAZIONE LETTERALE della frase/riga del documento da cui deriva il giudizio.
+  Se il termine e assente scrivi "Nessuna occorrenza trovata nel documento per [termine cercato]."
+  NON inventare frasi. Copia esattamente il testo trovato, inclusi eventuali numeri e riferimenti di pagina.
+- "page": numero di pagina dove e stata trovata la fonte (null se assente)
+- "sourceFileName": nome del file PDF da cui e stato estratto
 
 Struttura JSON richiesta:
 {
@@ -79,10 +90,34 @@ Struttura JSON richiesta:
     }
   ],
   "checklist": {
-    "debitiGSE": { "presente": false, "dettaglio": "string", "page": 1, "sourceFileName": "string" },
-    "accantonamenti": { "presente": false, "dettaglio": "string", "page": 1, "sourceFileName": "string" },
-    "riduzioniRicavi": { "presente": false, "dettaglio": "string", "page": 1, "sourceFileName": "string" },
-    "contenziosi": { "presente": false, "dettaglio": "string", "page": 1, "sourceFileName": "string" }
+    "debitiGSE": {
+      "presente": false,
+      "dettaglio": "string",
+      "fonteTestuale": "string",
+      "page": null,
+      "sourceFileName": "string"
+    },
+    "accantonamenti": {
+      "presente": false,
+      "dettaglio": "string",
+      "fonteTestuale": "string",
+      "page": null,
+      "sourceFileName": "string"
+    },
+    "riduzioniRicavi": {
+      "presente": false,
+      "dettaglio": "string",
+      "fonteTestuale": "string",
+      "page": null,
+      "sourceFileName": "string"
+    },
+    "contenziosi": {
+      "presente": false,
+      "dettaglio": "string",
+      "fonteTestuale": "string",
+      "page": null,
+      "sourceFileName": "string"
+    }
   }
 }
 `;
@@ -105,7 +140,7 @@ Redigi una relazione tecnica professionale in italiano con le seguenti sezioni. 
 
 1. "analisiRicavi": Analizza il trend dei ricavi negli anni disponibili. Commenta l'andamento dell'utile netto e il confronto con l'importo residuo GSE. Evidenzia segnali positivi o negativi.
 2. "analisiLiquidita": Commenta i ratios di liquidita (current, quick, cash ratio). Valuta la capacita di copertura del residuo GSE con le disponibilita immediate e il circolante.
-3. "accantonamenti": Analizza cosa emerge dalla checklist GSE/extraprofitti (debiti iscritti, accantonamenti, riduzioni ricavi, contenziosi). Valuta il rischio di passivita potenziali non rilevate.
+3. "accantonamenti": Analizza cosa emerge dalla checklist GSE/extraprofitti (debiti iscritti, accantonamenti, riduzioni ricavi, contenziosi). Per ciascuna voce, fai riferimento alla fonteTestuale estratta. Valuta il rischio di passivita potenziali non rilevate.
 4. "conclusione": Giudizio sintetico finale sulla sostenibilita dell'esborso, segnali di rischio prevalenti, raccomandazione operativa.
 5. "esito": UNA SOLA delle tre stringhe esatte: "SOSTENIBILE" oppure "CAUTELA" oppure "RISCHIO ELEVATO"
 6. "commentoCopertura": Una frase breve (max 2 righe) che commenta sinteticamente gli indici di copertura cassa/attivo/patrimonio rispetto al residuo GSE.

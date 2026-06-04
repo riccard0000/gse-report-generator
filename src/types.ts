@@ -44,6 +44,8 @@ export interface FinancialYearData {
 export interface ChecklistItem {
   presente: boolean;
   dettaglio: string;
+  /** Frase/paragrafo esatto trovato nel documento da cui deriva il giudizio */
+  fonteTestuale: string | null;
   page: number | null;
   sourceFileName: string | null;
 }
