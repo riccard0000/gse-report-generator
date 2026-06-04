@@ -36,12 +36,15 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Copy demo PDFs to public/
+        run: |
+          mkdir -p public
+          cp OUT_LASTBIL_IC01637000892\ 2022\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf"
+          cp OUT_LASTBIL_IC01637000892\ 2023\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf"
+          cp OUT_LASTBIL_IC01637000892\ 2024\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf"
+
       - name: Build
         env:
-          # URL del Cloudflare Worker proxy — configura questo secret in:
-          # GitHub → Settings → Secrets and variables → Actions → New repository secret
-          # Nome: VITE_PROXY_URL
-          # Valore: https://gse-proxy.TUONOME.workers.dev
           VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
         run: npm run build
 
