@@ -4,7 +4,7 @@ import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
 import { DataVerification } from './components/DataVerification';
 import { ExtractedData, NarrativeData } from './types';
-import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls } from './mockData';
+import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { Zap, AlertTriangle, FlaskConical } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
@@ -40,7 +40,7 @@ export default function App() {
 
   /**
    * DEMO MODE:
-   * 1. Fetcha i 3 PDF statici serviti sotto BASE_URL (es. /gse-report-generator/)
+   * 1. Fetcha i 3 PDF statici serviti sotto BASE_URL
    * 2. Li converte in oggetti File sintetici
    * 3. Carica MOCK_EXTRACTED_DATA senza chiamare OpenRouter
    */
@@ -81,6 +81,34 @@ export default function App() {
     setIsDemoMode(false);
   };
 
+  /**
+   * Callback chiamata da DataVerification quando l'utente clicca "Conferma e genera report".
+   * - In DEMO MODE: usa la narrativa mock statica (zero chiamate API)
+   * - In modalita reale: chiama generateNarrative via OpenRouter
+   */
+  const handleApprove = useCallback(async (finalData: ExtractedData) => {
+    try {
+      setAppState('generating');
+      setProgress('Generazione del report in corso...');
+
+      let narrative: NarrativeData;
+
+      if (isDemoMode) {
+        // DEMO: nessuna chiamata API, usa narrativa pre-calcolata
+        await new Promise((r) => setTimeout(r, 800)); // breve pausa UX
+        narrative = MOCK_NARRATIVE_DATA;
+      } else {
+        narrative = await generateNarrative(finalData, setProgress);
+      }
+
+      setNarrativeData(narrative);
+      setAppState('done');
+    } catch (e: any) {
+      setError(e.message || 'Errore durante la generazione del report');
+      setAppState('error');
+    }
+  }, [isDemoMode]);
+
   const isLoading = appState === 'extracting' || appState === 'generating';
   const showUpload = appState === 'idle' || appState === 'extracting' || appState === 'error';
   const showVerification = appState === 'verifying' || appState === 'generating';
@@ -96,7 +124,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900">GSE Report Generator</h1>
-              <p className="text-xs text-slate-500">Istruttoria Extraprofitti · art. 15-bis D.L. 4/2022</p>
+              <p className="text-xs text-slate-500">Istruttoria Extraprofitti &middot; art. 15-bis D.L. 4/2022</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -192,19 +220,21 @@ export default function App() {
           <DataVerification
             files={files}
             extractedData={extractedData}
-            onApprove={async (finalData) => {
-              try {
-                setAppState('generating');
-                setProgress('Generazione della narrativa in corso...');
-                const narrative = await generateNarrative(finalData, setProgress);
-                setNarrativeData(narrative);
-                setAppState('done');
-              } catch (e: any) {
-                setError(e.message || 'Errore durante la generazione del report');
-                setAppState('error');
-              }
-            }}
+            onApprove={handleApprove}
           />
+        )}
+
+        {/* Spinner durante la generazione (sovrapposto alla verifica) */}
+        {appState === 'generating' && (
+          <div className="fixed inset-0 bg-white/70 flex items-center justify-center z-50">
+            <div className="flex items-center space-x-3 text-blue-600 bg-white border border-slate-200 rounded-xl px-6 py-4 shadow-lg">
+              <svg className="animate-spin h-6 w-6" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-sm font-medium">{progress || 'Generazione report...'}</span>
+            </div>
+          </div>
         )}
 
         {/* STEP 3: Report Viewer */}
