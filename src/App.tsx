@@ -4,13 +4,14 @@ import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './geminiService';
 import { DataVerification } from './components/DataVerification';
 import { Settings } from './components/Settings';
+import { BrowserDiagnosticsPanel } from './components/BrowserDiagnosticsPanel';
 import { ExtractedData, NarrativeData } from './types';
 import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { ModelConfigProvider } from './context/ModelConfigContext';
-import { Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon, Home, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
+import { Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon, Home, ChevronLeft, ChevronRight, Menu, Stethoscope } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
-type Page = 'home' | 'settings';
+type Page = 'home' | 'settings' | 'diagnostics';
 
 const REQUIRED_FILES = 3;
 
@@ -107,9 +108,16 @@ function AppInner() {
   const showVerification = appState === 'verifying' || appState === 'generating';
 
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
-    { id: 'home',     label: 'Analisi',       icon: <Home className="w-5 h-5" /> },
-    { id: 'settings', label: 'Impostazioni',  icon: <SettingsIcon className="w-5 h-5" /> },
+    { id: 'home',        label: 'Analisi',       icon: <Home className="w-5 h-5" /> },
+    { id: 'diagnostics', label: 'Diagnostica',   icon: <Stethoscope className="w-5 h-5" /> },
+    { id: 'settings',   label: 'Impostazioni',  icon: <SettingsIcon className="w-5 h-5" /> },
   ];
+
+  const PAGE_TITLES: Record<Page, { title: string; subtitle: string }> = {
+    home:        { title: 'GSE Report Generator',  subtitle: 'Istruttoria Extraprofitti \u00b7 art. 15-bis D.L. 4/2022' },
+    diagnostics: { title: 'Diagnostica Browser',   subtitle: 'Verifica autonoma della catena app \u2192 proxy \u2192 PDF' },
+    settings:    { title: 'Impostazioni',           subtitle: 'Configurazione modelli AI' },
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
@@ -203,12 +211,10 @@ function AppInner() {
               </button>
               <div>
                 <h1 className="text-xl font-bold text-slate-900">
-                  {page === 'home' ? 'GSE Report Generator' : 'Impostazioni'}
+                  {PAGE_TITLES[page].title}
                 </h1>
                 <p className="text-xs text-slate-500">
-                  {page === 'home'
-                    ? 'Istruttoria Extraprofitti \u00b7 art. 15-bis D.L. 4/2022'
-                    : 'Configurazione modelli AI'}
+                  {PAGE_TITLES[page].subtitle}
                 </p>
               </div>
             </div>
@@ -233,6 +239,13 @@ function AppInner() {
 
         {/* Content */}
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-8">
+
+          {/* ── DIAGNOSTICS PAGE ── */}
+          {page === 'diagnostics' && (
+            <div className="max-w-2xl mx-auto">
+              <BrowserDiagnosticsPanel />
+            </div>
+          )}
 
           {/* ── SETTINGS PAGE ── */}
           {page === 'settings' && <Settings />}
