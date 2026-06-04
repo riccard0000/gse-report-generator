@@ -5,6 +5,14 @@ import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
+// Tipo locale per gli item testuali di pdfjs-dist (non esportato dal pacchetto)
+interface PdfTextItem {
+  str: string;
+  transform: number[];
+  width: number;
+  height: number;
+}
+
 function formatIT(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
   const negative = value < 0;
@@ -54,9 +62,7 @@ function cleanRawText(raw: string, maxLen = 60): string {
 }
 
 /**
- * Cerca una sottostringa di rawText nel contenuto testuale di una pagina PDF
- * e restituisce il bbox approssimato del primo match.
- * Usa i primi N token del rawText come query per essere robusto a spazi/maiuscole.
+ * Cerca rawText nel contenuto testuale della pagina e restituisce il bbox del match.
  */
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -66,18 +72,16 @@ async function findBboxByText(
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    // Prendo le prime 4 parole significative del rawText come query
     const queryWords = rawText
       .toLowerCase()
-      .replace(/[^a-z0-9àèéìòù\s]/g, ' ')
+      .replace(/[^a-z0-9\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length > 2)
       .slice(0, 4);
     if (queryWords.length === 0) return null;
 
-    // Cerco l'item il cui testo contiene la prima parola chiave
-    const items = content.items as pdfjsLib.TextItem[];
-    let bestItem: pdfjsLib.TextItem | null = null;
+    const items = content.items as PdfTextItem[];
+    let bestItem: PdfTextItem | null = null;
     for (const item of items) {
       const txt = item.str.toLowerCase();
       const matchCount = queryWords.filter(w => txt.includes(w)).length;
@@ -86,13 +90,11 @@ async function findBboxByText(
         break;
       }
     }
-    // Fallback: almeno la prima parola
     if (!bestItem) {
       bestItem = items.find(it => it.str.toLowerCase().includes(queryWords[0])) ?? null;
     }
     if (!bestItem) return null;
 
-    // Transform PDF: [a,b,c,d,e,f] → x=e, y=f (origin bottom-left)
     const tf = bestItem.transform;
     const x0 = tf[4];
     const y0 = tf[5];
@@ -316,7 +318,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
 
-  // Cache del PDFDocumentProxy per la ricerca testo (separato dal viewer)
   const pdfDocCacheRef = useRef<Map<number, pdfjsLib.PDFDocumentProxy>>(new Map());
 
   const getPdfDoc = useCallback(async (fileIdx: number, file: File): Promise<pdfjsLib.PDFDocumentProxy> => {
@@ -336,27 +337,20 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
-    // Caso 1: bbox già disponibile → highlight immediato
     if (field?.bbox && field?.page) {
       setActiveHighlight({ page: field.page, bbox: field.bbox, color });
       return;
     }
 
-    // Caso 2: bbox null ma page e rawText disponibili → ricerca testo nel PDF
     if (field?.page && field?.rawText && files[fileIdx]) {
-      setActiveHighlight(null); // pulisco mentre cerco
+      setActiveHighlight(null);
       try {
         const doc  = await getPdfDoc(fileIdx, files[fileIdx]);
         const bbox = await findBboxByText(doc, field.page, field.rawText);
         if (bbox) {
           setActiveHighlight({ page: field.page, bbox, color });
         } else {
-          // Nessun match testo: navigo comunque alla pagina giusta senza highlight
-          setActiveHighlight({
-            page: field.page,
-            bbox: { x0: 0, y0: 0, x1: 0, y1: 0 },
-            color,
-          });
+          setActiveHighlight({ page: field.page, bbox: { x0: 0, y0: 0, x1: 0, y1: 0 }, color });
         }
       } catch {
         setActiveHighlight(null);
@@ -396,7 +390,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
       {/* COLONNA SINISTRA */}
       <div className="w-2/5 flex flex-col border-r border-slate-200 overflow-hidden">
-        {/* Tab bar */}
         <div className="flex border-b border-slate-200 bg-slate-50">
           {tabLabels.map((label, i) => (
             <button key={i} onClick={() => { setActiveTab(i); setActiveHighlight(null); }}
@@ -407,10 +400,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           ))}
         </div>
 
-        {/* Form */}
         <div className="flex-1 overflow-y-auto p-5">
 
-          {/* TAB 0: GSE */}
           {activeTab === 0 && (
             <div>
               <p className="text-xs text-slate-500 mb-5 leading-relaxed">
@@ -435,7 +426,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             </div>
           )}
 
-          {/* TAB 1-N: Bilanci */}
           {activeTab >= 1 && (() => {
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
@@ -447,7 +437,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   Clicca su un campo per evidenziare il testo nel documento a destra.
                 </p>
 
-                {/* Anno */}
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
@@ -463,12 +452,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   />
                 </div>
 
-                {/* Campi numerici */}
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field   = year[key] as ExtractedField<number>;
-                  const hasBbox = !!field?.bbox && !!field?.page;
-                  const hasPage = !!field?.page;
-                  // Mostra badge pagina se c'è almeno la pagina (con o senza bbox)
+                  const field      = year[key] as ExtractedField<number>;
+                  const hasBbox    = !!field?.bbox && !!field?.page;
+                  const hasPage    = !!field?.page;
                   const badgeColor = hasBbox ? 'text-blue-500' : 'text-slate-400';
                   return (
                     <div key={key as string}>
@@ -498,7 +485,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   );
                 })}
 
-                {/* ── Sezione Checklist GSE ── */}
                 <div className="mt-6 pt-4 border-t border-slate-200">
                   <div className="flex items-center gap-2 mb-3">
                     <FileSearch className="w-4 h-4 text-indigo-500" />
@@ -509,11 +495,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   </p>
                   <div className="space-y-3">
                     {CHECKLIST_LABELS.map(({ key, label }) => {
-                      const item = checklist[key];
-                      const isPres = item?.presente;
+                      const item       = checklist[key];
+                      const isPres     = item?.presente;
                       const badgeBg    = isPres ? 'bg-red-50 border-red-200'   : 'bg-emerald-50 border-emerald-200';
                       const badgeText  = isPres ? 'text-red-700'               : 'text-emerald-700';
-                      const badgeLabel = isPres ? '⚠ Presente'                 : '✓ Assente';
+                      const badgeLabel = isPres ? '\u26a0 Presente'            : '\u2713 Assente';
                       return (
                         <div key={key} className={`rounded-lg border p-3 ${badgeBg}`}>
                           <div className="flex items-start justify-between gap-2 mb-1">
@@ -528,7 +514,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                               <div className="flex items-center gap-1 mb-0.5">
                                 <FileSearch className="w-2.5 h-2.5 text-slate-400" />
                                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">
-                                  Fonte{item.page ? ` — pag. ${item.page}` : ''}
+                                  Fonte{item.page ? ` \u2014 pag. ${item.page}` : ''}
                                 </span>
                               </div>
                               <p className="text-[10px] text-slate-600 italic leading-relaxed">
@@ -547,7 +533,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           })()}
         </div>
 
-        {/* Bottone Conferma */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
           <button onClick={() => onApprove(data)}
             className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl transition-colors shadow-sm">
