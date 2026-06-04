@@ -7,7 +7,7 @@ interface Props {
   maxFiles?: number;
 }
 
-export const FileUploader: React.FC<Props> = ({ files, onFilesChange, maxFiles = 4 }) => {
+export const FileUploader: React.FC<Props> = ({ files, onFilesChange, maxFiles = 3 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -44,7 +44,7 @@ export const FileUploader: React.FC<Props> = ({ files, onFilesChange, maxFiles =
           Trascina qui i file PDF o <span className="text-blue-600">sfoglia</span>
         </p>
         <p className="text-xs text-slate-500">
-          Carica fino a {maxFiles} documenti (Bilanci + documento GSE)
+          Carica esattamente {maxFiles} bilanci aziendali in formato PDF
         </p>
       </div>
 
