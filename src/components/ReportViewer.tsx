@@ -122,20 +122,12 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
     </tr>`;
   }).join('');
 
-  // Badge esito inline per la meta-bar tabella
-  const badgeStyle = `display:inline-block;font-size:9pt;font-weight:bold;padding:2px 10px;border:2px solid ${esitoBorder(esitoStr)};background-color:${esitoBg(esitoStr)};color:${esitoColor(esitoStr)};border-radius:3px;mso-style-name:badge`;
-
   return `<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
 <title>Report GSE &ndash; ${esc(company)}</title>
-<!--[if mso]><xml>
-<w:WordDocument>
-  <w:View>Print</w:View>
-  <w:Zoom>100</w:Zoom>
-</w:WordDocument>
-</xml><![endif]-->
+<!--[if mso]><style>table{width:100%!important;border-collapse:collapse}td,th{word-break:normal!important}</style><![endif]-->
 <style>
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin:0; padding:0; width:100%; }
@@ -146,62 +138,50 @@ body {
   line-height: 1.4;
   background-color: #ffffff;
 }
-
-/* Header e meta-bar: definite come tabelle nel markup, stili CSS solo per browser */
-.header-table {
-  width: 100%;
-  border-collapse: collapse;
+.doc-header {
   background-color: #0f3460;
-  mso-cellspacing: 0;
+  padding: 24px 32px 20px;
+  width: 100%;
 }
-.header-cell {
-  padding: 20px 32px 16px;
-  vertical-align: top;
-}
-.header-label {
-  font-size: 8pt;
+.doc-header-label {
+  font-size: 8.5pt;
   color: #93c5fd;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  display: block;
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
-.header-title {
-  font-size: 15pt;
+.doc-header h1 {
+  font-size: 16pt;
   font-weight: bold;
   color: #ffffff;
-  margin: 0 0 5px 0;
-  line-height: 1.3;
+  margin: 0 0 6px 0;
 }
-.header-sub {
-  font-size: 8.5pt;
-  color: #bfdbfe;
-  margin: 0;
-}
-.meta-table {
-  width: 100%;
-  border-collapse: collapse;
+.doc-header-sub { font-size: 9pt; color: #bfdbfe; margin: 0; }
+.meta-bar {
   background-color: #1e3a5f;
-  mso-cellspacing: 0;
+  padding: 10px 32px;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
 }
-.meta-td {
-  padding: 7px 16px 7px 32px;
-  font-size: 8.5pt;
+.meta-cell {
+  font-size: 9pt;
   color: #e2e8f0;
+  padding: 3px 20px 3px 0;
   white-space: nowrap;
-  vertical-align: middle;
 }
-.meta-td strong { color: #ffffff; }
-.meta-td-right {
-  padding: 7px 32px 7px 8px;
-  font-size: 7.5pt;
-  color: #94a3b8;
-  text-align: right;
-  vertical-align: middle;
-  white-space: nowrap;
-  width: 1%;
+.meta-cell strong { color: #ffffff; }
+.esito-badge {
+  display: inline-block;
+  font-size: 9pt;
+  font-weight: bold;
+  padding: 2px 10px;
+  border: 2px solid ${esitoBorder(esitoStr)};
+  background-color: ${esitoBg(esitoStr)};
+  color: ${esitoColor(esitoStr)};
+  border-radius: 3px;
 }
-
 .content { padding: 16px 32px 8px; }
 
 h2 {
@@ -223,6 +203,7 @@ h3 { font-size: 9.5pt; font-weight: bold; color: #1e3a5f; margin: 10px 0 2px 0; 
 p   { font-size: 10pt; margin: 0 0 5px 0; color: #374151; }
 .muted { font-size: 8.5pt; color: #6b7280; }
 
+/* Tabelle compatte */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -247,12 +228,6 @@ td {
   vertical-align: top;
   word-wrap: break-word;
   overflow-wrap: break-word;
-}
-
-/* Override bordi per tabelle header/meta (no bordi tra celle) */
-.header-table td,
-.meta-table td {
-  border: none;
 }
 
 .narrative-box {
@@ -293,41 +268,24 @@ td {
 @media print {
   h2 { break-before: page; page-break-before: always; }
   h2.no-break { break-before: auto; page-break-before: auto; }
-  .header-table, .meta-table { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .doc-header, .meta-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 </style>
 </head>
 <body>
-
-<!--
-  HEADER: tabella a 1 cella con bgcolor per compatibilità Word.
-  Word non legge background-color CSS su div, ma legge bgcolor su <td>.
--->
-<table class="header-table" width="100%" cellspacing="0" cellpadding="0" border="0">
-<tr>
-  <td class="header-cell" bgcolor="#0f3460" style="background-color:#0f3460;padding:20px 32px 16px;vertical-align:top;">
-    <span class="header-label" style="font-size:8pt;color:#93c5fd;letter-spacing:0.08em;text-transform:uppercase;display:block;margin-bottom:6px;">Istruttoria economico-finanziaria &middot; Extraprofitti &middot; art. 15-bis D.L. 4/2022</span>
-    <p class="header-title" style="font-size:15pt;font-weight:bold;color:#ffffff;margin:0 0 5px 0;line-height:1.3;">Report di sostenibilit&agrave; del recupero credito residuo GSE</p>
-    <p class="header-sub" style="font-size:8.5pt;color:#bfdbfe;margin:0;">Valutazione della capacit&agrave; dell&apos;azienda di assorbire l&apos;esborso richiesto &mdash; analisi bilanci, KPI patrimoniali ed elementi GSE/extraprofitti</p>
-  </td>
-</tr>
-</table>
-
-<!--
-  META-BAR: tabella a N celle su fondo #1e3a5f.
-  Ogni voce è una <td> separata — Word li renderà in riga.
--->
-<table class="meta-table" width="100%" cellspacing="0" cellpadding="0" border="0">
-<tr>
-  <td class="meta-td" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 16px 7px 32px;font-size:8.5pt;color:#e2e8f0;white-space:nowrap;vertical-align:middle;"><strong style="color:#ffffff;">Societ&agrave;:</strong>&nbsp;${esc(company)}</td>
-  <td class="meta-td" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 16px;font-size:8.5pt;color:#e2e8f0;white-space:nowrap;vertical-align:middle;"><strong style="color:#ffffff;">P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}</td>
-  <td class="meta-td" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 16px;font-size:8.5pt;color:#e2e8f0;white-space:nowrap;vertical-align:middle;"><strong style="color:#ffffff;">Anno KPI:</strong>&nbsp;${annoKpi}</td>
-  <td class="meta-td" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 16px;font-size:8.5pt;color:#e2e8f0;white-space:nowrap;vertical-align:middle;"><strong style="color:#ffffff;">Residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}</td>
-  <td class="meta-td" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 16px;font-size:8.5pt;color:#e2e8f0;white-space:nowrap;vertical-align:middle;"><strong style="color:#ffffff;">Esito:</strong>&nbsp;<span style="${badgeStyle}">${esitoStr}</span></td>
-  <td class="meta-td-right" bgcolor="#1e3a5f" style="background-color:#1e3a5f;padding:7px 32px 7px 8px;font-size:7.5pt;color:#94a3b8;text-align:right;vertical-align:middle;white-space:nowrap;">Generato il ${generatedDate}</td>
-</tr>
-</table>
-
+<div class="doc-header">
+  <div class="doc-header-label">Istruttoria economico-finanziaria &middot; Extraprofitti &middot; art. 15-bis D.L. 4/2022</div>
+  <h1>Report di sostenibilit&agrave; del recupero credito residuo GSE</h1>
+  <p class="doc-header-sub">Valutazione della capacit&agrave; dell&apos;azienda di assorbire l&apos;esborso richiesto &mdash; analisi bilanci, KPI patrimoniali ed elementi GSE/extraprofitti</p>
+</div>
+<div class="meta-bar">
+  <div class="meta-cell"><strong>Societ&agrave;:</strong>&nbsp;${esc(company)}</div>
+  <div class="meta-cell"><strong>P.&nbsp;IVA:</strong>&nbsp;${esc(piva)}</div>
+  <div class="meta-cell"><strong>Anno KPI:</strong>&nbsp;${annoKpi}</div>
+  <div class="meta-cell"><strong>Residuo GSE:</strong>&nbsp;&euro;&nbsp;${fmt(residuo)}</div>
+  <div class="meta-cell"><strong>Esito:</strong>&nbsp;<span class="esito-badge">${esitoStr}</span></div>
+  <div class="meta-cell" style="margin-left:auto;color:#94a3b8;font-size:8pt">Generato il ${generatedDate}</div>
+</div>
 <div class="content">
 
 <h2 class="no-break">1 &mdash; Nota sintetica di esito</h2>
