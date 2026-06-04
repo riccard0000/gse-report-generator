@@ -66,14 +66,21 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
 
   const checklist = data.checklist;
 
-  const checkRow = (label: string, item: { presente: boolean; dettaglio: string }) => {
+  // Checklist row con fonte testuale
+  const checkRow = (label: string, item: { presente: boolean; dettaglio: string; fonteTestuale?: string | null; page?: number | null }) => {
     const icon      = item.presente ? '&#9888;' : '&#10003;';
     const iconColor = item.presente ? '#b91c1c' : '#166534';
     const bg        = item.presente ? '#fff5f5' : '#f0fdf4';
+    const fonteBg   = item.presente ? '#fff0f0' : '#f0fdf4';
+    const fonteHtml = item.fonteTestuale
+      ? `<div style="margin-top:4px;padding:4px 7px;background-color:${fonteBg};border-left:3px solid #94a3b8;font-size:7.5pt;color:#475569;font-style:italic">
+          <span style="font-style:normal;font-weight:bold;color:#64748b;font-size:7pt">FONTE${item.page ? ` — pag. ${item.page}` : ''}:&nbsp;</span>${esc(item.fonteTestuale)}
+        </div>`
+      : '';
     return `<tr style="background-color:${bg}">
       <td>${label}</td>
       <td style="font-weight:bold;color:${iconColor};text-align:center">${icon}&nbsp;${item.presente ? 'Presente' : 'Assente'}</td>
-      <td style="color:#374151">${esc(item.dettaglio || '&mdash;')}</td>
+      <td style="color:#374151">${esc(item.dettaglio || '&mdash;')}${fonteHtml}</td>
     </tr>`;
   };
 
@@ -368,10 +375,11 @@ ${bilRow('Fondo rischi e oneri', 'fondoRischiOneri')}
 <div class="copertura-note">${esc(narrative.commentoCopertura ?? '')}</div>
 
 <h2>5 &mdash; Checklist GSE ed extraprofitti</h2>
+<p class="muted">Per ogni voce viene riportata la citazione testuale letterale estratta dal documento PDF da cui deriva il giudizio.</p>
 <table><thead><tr>
-  <th style="width:40%">Voce verificata</th>
-  <th style="width:16%">Esito</th>
-  <th style="width:44%">Dettaglio riscontrato</th>
+  <th style="width:28%">Voce verificata</th>
+  <th style="width:12%">Esito</th>
+  <th style="width:60%">Dettaglio e fonte testuale</th>
 </tr></thead><tbody>
 ${checkRow('Debiti iscritti verso GSE nello SP', checklist.debitiGSE)}
 ${checkRow('Accantonamenti Fondo Rischi extraprofitti', checklist.accantonamenti)}
