@@ -126,6 +126,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
     debitiGSE:         { presente: false, dettaglio: "", page: 0, sourceFileName: "" },
     accantonamenti:    { presente: false, dettaglio: "", page: 0, sourceFileName: "" },
     riduzioniRicavi:   { presente: false, dettaglio: "", page: 0, sourceFileName: "" },
-    straordinari:      { presente: false, dettaglio: "", page: 0, sourceFileName: "" },
+    contenziosi:       { presente: false, dettaglio: "", page: 0, sourceFileName: "" },
   },
 };
