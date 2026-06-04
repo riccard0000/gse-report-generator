@@ -67,7 +67,8 @@ export interface NarrativeData {
   analisiLiquidita: string;
   accantonamenti: string;
   conclusione: string;
-  esito: string;
+  esito: 'SOSTENIBILE' | 'CAUTELA' | 'RISCHIO ELEVATO';
+  commentoCopertura: string;
 }
 
 export interface HighlightInfo {

@@ -1,45 +1,47 @@
-/**
- * geminiService.ts
- *
- * Logica di estrazione PDF e chiamate AI.
- * NON contiene né legge chiavi API — tutta l'autenticazione
- * è delegata al Cloudflare Worker proxy (vedere /worker/).
- */
 import * as pdfjsLib from 'pdfjs-dist';
 import { ExtractedData, NarrativeData } from './types';
 import {
   GITHUB_MODEL_EXTRACT,
   GITHUB_MODEL_NARRATIVE,
-  PROXY_ENDPOINT,
+  GITHUB_MODELS_ENDPOINT,
   EXTRACTION_PROMPT,
   NARRATIVE_PROMPT,
 } from './constants';
+import { calculateKpis } from './kpiCalculator';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// ─── Parsing strutturale del PDF (mantiene struttura tabellare) ────────────
-const extractStructuredText = (items: any[]): string => {
+// ─── Chiave API da variabile d'ambiente Vite ───────────────────────────────
+const getApiKey = (): string => {
+  const key = import.meta.env.VITE_GITHUB_TOKEN as string;
+  if (!key) throw new Error('Variabile VITE_GITHUB_TOKEN non configurata.');
+  return key;
+};
+
+// ─── Parsing strutturale del PDF (mantiene struttura tabellare via coord X/Y)
+const extractStructuredText = (items: pdfjsLib.TextItem[]): string => {
   const rows: Record<number, { str: string; transform: number[] }[]> = {};
 
   items.forEach((item) => {
-    const y = Math.round(item.transform[5] as number);
+    if (!('str' in item)) return;
+    const y = Math.round((item as pdfjsLib.TextItem).transform[5]);
     if (!rows[y]) rows[y] = [];
-    rows[y].push(item);
+    rows[y].push(item as pdfjsLib.TextItem);
   });
 
   return Object.keys(rows)
-    .sort((a: string, b: string) => Number(b) - Number(a))
-    .map((y: string) =>
+    .sort((a, b) => Number(b) - Number(a))
+    .map((y) =>
       rows[Number(y)]
-        .sort((a, b) => (a.transform[4] as number) - (b.transform[4] as number))
-        .map((i) => (i.str as string).trim())
+        .sort((a, b) => a.transform[4] - b.transform[4])
+        .map((i) => i.str.trim())
         .join('\t')
     )
     .join('\n');
 };
 
-// ─── Estrazione testo da un singolo file PDF ───────────────────────────────
+// ─── Estrazione testo da un singolo PDF ───────────────────────────────────
 const extractTextFromPdf = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -48,20 +50,29 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const pageText = extractStructuredText(content.items);
+    const pageText = extractStructuredText(content.items as pdfjsLib.TextItem[]);
     fullText += `\n--- PAGINA ${pageNum} ---\n${pageText}\n`;
   }
   return fullText;
 };
 
-// ─── Chiamata al proxy Cloudflare Worker (nessuna chiave nel browser) ───────
-const callProxy = async (
+// ─── Chiamata centralizzata all'API OpenRouter ────────────────────────────
+const callOpenRouter = async (
   model: string,
-  messages: object[]
+  messages: object[],
+  onProgress?: (msg: string) => void
 ): Promise<string> => {
-  const response = await fetch(PROXY_ENDPOINT, {
+  const apiKey = getApiKey();
+  onProgress?.('Chiamata AI in corso...');
+
+  const response = await fetch(`${GITHUB_MODELS_ENDPOINT}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'GSE Report Generator',
+    },
     body: JSON.stringify({
       model,
       messages,
@@ -71,19 +82,19 @@ const callProxy = async (
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({})) as any;
+    const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(
-      `Errore proxy ${response.status}: ${
-        errorData?.error?.message ?? 'Errore nella richiesta'
+      `Errore OpenRouter ${response.status}: ${
+        errorData.error?.message ?? 'Errore nella richiesta'
       }`
     );
   }
 
-  const data = await response.json() as any;
-  return data?.choices?.[0]?.message?.content ?? '';
+  const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+  return data.choices?.[0]?.message?.content ?? '';
 };
 
-// ─── Export: Estrazione dati strutturati dai PDF ──────────────────────────
+// ─── Export: Estrazione dati dai PDF ─────────────────────────────────────
 export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
@@ -97,35 +108,64 @@ export const extractDataFromPdfs = async (
     docTexts.push(`\n=== DOCUMENTO: ${file.name} ===\n${text}`);
   }
 
-  onProgress?.('Analisi AI in corso...');
-  const text = await callProxy(GITHUB_MODEL_EXTRACT, [
-    { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON.' },
-    { role: 'user', content: `${EXTRACTION_PROMPT}\n\n${docTexts.join('\n\n')}` },
-  ]);
+  onProgress?.('Analisi AI — estrazione dati strutturati...');
+  const text = await callOpenRouter(
+    GITHUB_MODEL_EXTRACT,
+    [
+      { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
+      { role: 'user', content: `${EXTRACTION_PROMPT}\n\n${docTexts.join('\n\n')}` },
+    ],
+    onProgress
+  );
 
   try {
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     return JSON.parse(cleaned) as ExtractedData;
   } catch {
-    throw new Error("La risposta dell'AI non è un JSON valido. Riprova.");
+    throw new Error("La risposta dell'AI non e un JSON valido. Riprovare.");
   }
 };
 
-// ─── Export: Generazione narrativa tecnica ────────────────────────────────
+// ─── Export: Generazione narrativa tecnica (con KPI deterministici) ───────
 export const generateNarrative = async (
   data: ExtractedData,
   onProgress?: (msg: string) => void
 ): Promise<NarrativeData> => {
-  onProgress?.('Generazione narrativa tecnica...');
+  onProgress?.('Calcolo KPI deterministici...');
 
-  const text = await callProxy(GITHUB_MODEL_NARRATIVE, [
-    { role: 'user', content: NARRATIVE_PROMPT(JSON.stringify(data, null, 2)) },
-  ]);
+  // Prendi l'ultimo anno disponibile per i KPI
+  const lastYear = data.yearsData[data.yearsData.length - 1];
+  const kpis = calculateKpis(lastYear, data.gseResidual?.value ?? null);
+
+  onProgress?.('Generazione narrativa tecnica (seconda chiamata AI)...');
+
+  const text = await callOpenRouter(
+    GITHUB_MODEL_NARRATIVE,
+    [
+      {
+        role: 'system',
+        content: 'Sei un funzionario GSE esperto. Rispondi solo in JSON valido, senza markdown.',
+      },
+      {
+        role: 'user',
+        content: NARRATIVE_PROMPT(
+          JSON.stringify(data, null, 2),
+          JSON.stringify({ anno: lastYear.year, ...kpis }, null, 2)
+        ),
+      },
+    ],
+    onProgress
+  );
 
   try {
     const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    return JSON.parse(cleaned) as NarrativeData;
+    const parsed = JSON.parse(cleaned) as NarrativeData;
+    // Normalizza esito
+    if (!['SOSTENIBILE', 'CAUTELA', 'RISCHIO ELEVATO'].includes(parsed.esito)) {
+      parsed.esito = 'CAUTELA';
+    }
+    return parsed;
   } catch {
-    throw new Error('Errore nella generazione della narrativa. Riprova.');
+    throw new Error('Errore nella generazione della narrativa. Riprovare.');
   }
 };

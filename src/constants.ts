@@ -1,12 +1,5 @@
 /**
  * Costanti di configurazione per il GSE Report Generator
- *
- * ARCHITETTURA:
- * Il frontend NON conosce la chiave API.
- * Tutte le chiamate AI passano attraverso un Cloudflare Worker proxy
- * che aggiunge l'header Authorization server-side.
- *
- * Deploy del Worker: vedere /worker/README.md
  */
 
 // Modello usato per l'estrazione dati strutturati dai PDF
@@ -15,15 +8,8 @@ export const GITHUB_MODEL_EXTRACT = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoni
 // Modello usato per la generazione della narrativa tecnica
 export const GITHUB_MODEL_NARRATIVE = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
-/**
- * Endpoint del proxy Cloudflare Worker.
- * In sviluppo locale punta al proxy locale (wrangler dev).
- * In produzione (GitHub Pages) punta al Worker deployato.
- *
- * Sostituisci con l'URL del tuo Worker dopo il deploy:
- * es. https://gse-proxy.TUONOME.workers.dev
- */
-export const PROXY_ENDPOINT = import.meta.env.VITE_PROXY_URL ?? 'https://gse-proxy.workers.dev';
+// Endpoint OpenRouter (la chiave è in VITE_GITHUB_TOKEN iniettata da GitHub Actions)
+export const GITHUB_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1';
 
 /**
  * Prompt per l'estrazione dati dai PDF.
@@ -33,6 +19,34 @@ export const EXTRACTION_PROMPT = `Sei un esperto analista finanziario italiano s
 Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
 
 Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick.
+
+Mappe voci di bilancio (schema italiano CE/SP):
+- "ricavi" = Totale Valore della produzione (voce A del CE)
+- "ebit" = Differenza tra valore e costi della produzione (A - B)
+- "ebitda" = ebit + ammortamenti + svalutazioni + accantonamenti (dalla nota integrativa)
+- "utileNetto" = voce 21 del CE
+- "interessiPassivi" = Totale interessi e altri oneri finanziari (C17)
+- "totaleAttivo" = Totale attivo SP
+- "patrimonioNetto" = Totale patrimonio netto SP (sezione A)
+- "totaleDebiti" = Totale debiti SP (sezione D)
+- "debitiBancheBreve" = debiti verso banche esigibili entro 12 mesi (nota integrativa debiti)
+- "debitiBancheML" = debiti verso banche esigibili oltre 12 mesi (nota integrativa debiti)
+- "disponibilitaLiquide" = IV - Disponibilita liquide (attivo circolante)
+- "creditiEntro12Mesi" = II - Crediti esigibili entro l'esercizio successivo
+- "rimanenze" = I - Rimanenze (attivo circolante)
+- "attivoCircolante" = Totale attivo circolante (C) SP
+- "passivitaCorrenti" = Totale debiti esigibili entro l'esercizio (SP)
+- "debitiTributari" = debiti tributari SP o nota integrativa
+- "debitiPrevidenziali" = debiti previdenziali/INPS/INAIL SP o nota integrativa
+- "fondoRischiOneri" = B) Fondi per rischi e oneri SP
+
+Per ciascun valore numerico includi sempre:
+- "value": numero intero (0 se assente, null se non trovato)
+- "page": numero di pagina del PDF
+- "rawText": la riga testuale esatta del documento da cui e stato estratto
+
+Per la CHECKLIST cerca in SP, CE e Nota Integrativa: "GSE", "Gestore Servizi Energetici", "Extraprofitti", "D.L. 4/2022", "art. 15-bis".
+Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
 Struttura JSON richiesta:
 {
@@ -75,19 +89,26 @@ Struttura JSON richiesta:
 
 /**
  * Prompt per la generazione della narrativa tecnica.
+ * Riceve i dati estratti JSON + i KPI gia calcolati deterministicamente.
+ * Risponde SOLO con JSON contenente i 4 paragrafi + esito + commentoCopertura.
  */
-export const NARRATIVE_PROMPT = (extractedData: string) =>
-  `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilità del debito da extraprofitti (art. 15-bis D.L. 4/2022).
+export const NARRATIVE_PROMPT = (extractedDataJson: string, kpiJson: string) =>
+  `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilita del debito da extraprofitti (art. 15-bis D.L. 4/2022).
 
 Dati estratti dai bilanci (JSON):
-${extractedData}
+${extractedDataJson}
 
-Redigi una relazione tecnica professionale in italiano con le seguenti sezioni:
-1. "analisiRicavi": Analisi dell'andamento dei ricavi e della redditività.
-2. "analisiLiquidita": Analisi della posizione finanziaria e liquidità.
-3. "accantonamenti": Verifica degli accantonamenti e passività potenziali.
-4. "conclusione": Conclusione tecnica sulla sostenibilità del debito GSE.
-5. "esito": "SOSTENIBILE" o "NON SOSTENIBILE" o "SOSTENIBILE CON RISERVA"
+KPI calcolati deterministicamente sull'ultimo anno disponibile:
+${kpiJson}
 
-Rispondi SOLO con un oggetto JSON valido (formato chiave-valore).
+Redigi una relazione tecnica professionale in italiano con le seguenti sezioni. Ogni sezione deve essere un paragrafo discorsivo di 4-6 righe, in terza persona, con stile formale da istruttoria GSE.
+
+1. "analisiRicavi": Analizza il trend dei ricavi negli anni disponibili. Commenta l'andamento dell'utile netto e il confronto con l'importo residuo GSE. Evidenzia segnali positivi o negativi.
+2. "analisiLiquidita": Commenta i ratios di liquidita (current, quick, cash ratio). Valuta la capacita di copertura del residuo GSE con le disponibilita immediate e il circolante.
+3. "accantonamenti": Analizza cosa emerge dalla checklist GSE/extraprofitti (debiti iscritti, accantonamenti, riduzioni ricavi, contenziosi). Valuta il rischio di passivita potenziali non rilevate.
+4. "conclusione": Giudizio sintetico finale sulla sostenibilita dell'esborso, segnali di rischio prevalenti, raccomandazione operativa.
+5. "esito": UNA SOLA delle tre stringhe esatte: "SOSTENIBILE" oppure "CAUTELA" oppure "RISCHIO ELEVATO"
+6. "commentoCopertura": Una frase breve (max 2 righe) che commenta sinteticamente gli indici di copertura cassa/attivo/patrimonio rispetto al residuo GSE.
+
+Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.
 `;
