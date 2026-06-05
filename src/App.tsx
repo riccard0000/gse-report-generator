@@ -5,10 +5,15 @@ import { extractDataFromPdfs, generateNarrative } from './aiService';
 import { DataVerification } from './components/DataVerification';
 import { Settings } from './components/Settings';
 import { BrowserDiagnosticsPanel } from './components/BrowserDiagnosticsPanel';
-import { ExtractedData, NarrativeData } from './types';
+import { ExtractionHistory } from './components/ExtractionHistory';
+import { ExtractedData, NarrativeData, ExtractionMeta } from './types';
 import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { ModelConfigProvider, useModelConfig } from './context/ModelConfigContext';
-import { Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon, Home, ChevronLeft, ChevronRight, Menu, Stethoscope } from 'lucide-react';
+import { saveExtraction } from './lib/extractionStorage';
+import {
+  Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
+  Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
+} from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
 type Page = 'home' | 'settings' | 'diagnostics';
@@ -18,15 +23,16 @@ const REQUIRED_FILES = 3;
 function AppInner() {
   const { promptCustom } = useModelConfig();
 
-  const [files, setFiles] = useState<File[]>([]);
-  const [appState, setAppState] = useState<AppState>('idle');
-  const [progress, setProgress] = useState('');
-  const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
-  const [narrativeData, setNarrativeData] = useState<NarrativeData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isDemoMode, setIsDemoMode] = useState(false);
-  const [page, setPage] = useState<Page>('home');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [files,          setFiles]          = useState<File[]>([]);
+  const [appState,       setAppState]       = useState<AppState>('idle');
+  const [progress,       setProgress]       = useState('');
+  const [extractedData,  setExtractedData]  = useState<ExtractedData | null>(null);
+  const [narrativeData,  setNarrativeData]  = useState<NarrativeData | null>(null);
+  const [error,          setError]          = useState<string | null>(null);
+  const [isDemoMode,     setIsDemoMode]     = useState(false);
+  const [page,           setPage]           = useState<Page>('home');
+  const [sidebarOpen,    setSidebarOpen]    = useState(false);
+  const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
   const navigate = (p: Page) => { setPage(p); setSidebarOpen(false); };
 
@@ -38,8 +44,6 @@ function AppInner() {
     setExtractedData(null);
     setNarrativeData(null);
     try {
-      // Passa una callback che legge il valore corrente di promptCustom
-      // (evita stale closure: viene letta al momento della chiamata)
       const extracted = await extractDataFromPdfs(
         files,
         () => promptCustom.extraction,
@@ -47,6 +51,8 @@ function AppInner() {
       );
       setExtractedData(extracted);
       setAppState('verifying');
+      // Salva silentemente su KV
+      saveExtraction(extracted, false);
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante l\'estrazione');
       setAppState('error');
@@ -59,7 +65,7 @@ function AppInner() {
     setAppState('extracting');
     setProgress('Caricamento PDF di esempio...');
     try {
-      const pdfUrls  = getMockPdfUrls();
+      const pdfUrls   = getMockPdfUrls();
       const demoFiles = await Promise.all(
         pdfUrls.map(async (url, i) => {
           const res = await fetch(url);
@@ -112,9 +118,52 @@ function AppInner() {
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  const isLoading     = appState === 'extracting' || appState === 'generating';
-  const showUpload    = appState === 'idle' || appState === 'extracting' || appState === 'error';
-  const showVerification = appState === 'verifying' || appState === 'generating';
+  // ── Ricarica da storico ────────────────────────────────────────────────────
+  const handleLoadFromHistory = useCallback(async (
+    data: ExtractedData,
+    meta: ExtractionMeta,
+  ) => {
+    setHistorySidebarOpen(false);
+    setError(null);
+    setNarrativeData(null);
+    setIsDemoMode(meta.isDemoMode);
+    setProgress('Caricamento PDF dallo storico...');
+    setAppState('extracting');
+    setPage('home');
+
+    // Tenta di ricaricare i PDF dai nomi file presenti in data
+    const fileNames = (data.yearsData ?? []).map(y => y.sourceFileName).filter(Boolean) as string[];
+    if (fileNames.length > 0) {
+      try {
+        // Prova a scaricare i PDF dalla stessa base URL usata dai mock demo
+        const rawBase = (import.meta.env.BASE_URL ?? '/') as string;
+        const base    = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+        const loaded  = await Promise.all(
+          fileNames.map(async name => {
+            const url  = `${base}${encodeURIComponent(name)}`;
+            const res  = await fetch(url);
+            if (!res.ok) throw new Error(`PDF non trovato: ${url}`);
+            const blob = await res.blob();
+            return new File([blob], name, { type: 'application/pdf' });
+          })
+        );
+        setFiles(loaded);
+      } catch {
+        // PDF non disponibili — continua senza file (viewer mostrerà placeholder)
+        setFiles([]);
+      }
+    } else {
+      setFiles([]);
+    }
+
+    setExtractedData(data);
+    setAppState('verifying');
+    setProgress('');
+  }, []);
+
+  const isLoading         = appState === 'extracting' || appState === 'generating';
+  const showUpload        = appState === 'idle' || appState === 'extracting' || appState === 'error';
+  const showVerification  = appState === 'verifying' || appState === 'generating';
 
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'home',        label: 'Analisi',      icon: <Home className="w-5 h-5" /> },
@@ -130,9 +179,16 @@ function AppInner() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
+      {/* Overlay mobile nav */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
+      {/* Overlay storico mobile */}
+      {historySidebarOpen && (
+        <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setHistorySidebarOpen(false)} />
+      )}
+
+      {/* Sidebar sinistra — navigazione */}
       <aside className={`fixed top-0 left-0 h-full z-30 bg-white border-r border-slate-200 shadow-lg flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-52' : 'w-14'} lg:static lg:shadow-none`}>
         <div className="flex items-center justify-between px-3 py-4 border-b border-slate-100 min-h-[64px]">
           {sidebarOpen && (
@@ -178,6 +234,7 @@ function AppInner() {
         )}
       </aside>
 
+      {/* Area contenuto principale */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="bg-white border-b border-slate-200 shadow-sm">
           <div className="px-4 sm:px-6 py-4 flex items-center justify-between">
@@ -196,6 +253,15 @@ function AppInner() {
                   <FlaskConical className="w-3.5 h-3.5" /> DEMO — GEOSOL 2022-2024
                 </span>
               )}
+              {/* Bottone storico — sempre visibile in home */}
+              {page === 'home' && (
+                <button
+                  onClick={() => setHistorySidebarOpen(true)}
+                  className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  <History className="w-4 h-4" /> Storico
+                </button>
+              )}
               {page === 'home' && (appState === 'done' || appState === 'verifying') && (
                 <button onClick={handleReset} className="text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors">
                   Nuova analisi
@@ -207,7 +273,7 @@ function AppInner() {
 
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-8">
           {page === 'diagnostics' && <div className="max-w-2xl mx-auto"><BrowserDiagnosticsPanel /></div>}
-          {page === 'settings' && <Settings />}
+          {page === 'settings'    && <Settings />}
           {page === 'home' && (
             <>
               {showUpload && (
@@ -285,6 +351,31 @@ function AppInner() {
           )}
         </main>
       </div>
+
+      {/* Sidebar destra — storico estrazioni */}
+      <aside
+        className={`fixed top-0 right-0 h-full z-30 bg-white border-l border-slate-200 shadow-xl flex flex-col transition-all duration-300 overflow-hidden ${
+          historySidebarOpen ? 'w-80' : 'w-0'
+        }`}
+      >
+        {historySidebarOpen && (
+          <>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+              <span className="text-sm font-bold text-slate-700">Storico Estrazioni</span>
+              <button
+                onClick={() => setHistorySidebarOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200 transition-colors"
+                aria-label="Chiudi storico"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <ExtractionHistory onLoadExtraction={handleLoadFromHistory} />
+            </div>
+          </>
+        )}
+      </aside>
     </div>
   );
 }

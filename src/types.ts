@@ -137,3 +137,13 @@ export interface HighlightInfo {
   color: 'yellow' | 'blue';
   id: string;
 }
+
+/** Metadata di una singola estrazione salvata su KV — usato nella sidebar storico */
+export interface ExtractionMeta {
+  id: string;
+  timestamp: number;
+  companyName: string;
+  vatNumber: string;
+  years: string[];
+  isDemoMode: boolean;
+}
