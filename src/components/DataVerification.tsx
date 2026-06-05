@@ -1,7 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { TextLayer } from 'pdfjs-dist';
-import { ExtractedData, ExtractedField, FinancialYearData } from '../types';
+import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
+import { computeDerivedFields } from '../kpiCalculator';
 import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -41,6 +42,9 @@ const TEXT_LAYER_CSS = `
 }
 `;
 
+// ---------------------------------------------------------------------------
+// Helpers formato numerico italiano
+// ---------------------------------------------------------------------------
 function formatIT(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
   const negative = value < 0;
@@ -80,6 +84,9 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
+// ---------------------------------------------------------------------------
+// Helpers label/caption per ExtractedField
+// ---------------------------------------------------------------------------
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   if (field.rawLabel) {
     const s = field.rawLabel.trim();
@@ -107,7 +114,7 @@ function lookupLabel(field: ExtractedField<unknown>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Tipi
+// Tipi interni
 // ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
@@ -127,6 +134,9 @@ interface PdfTextItem {
   height: number;
 }
 
+// ---------------------------------------------------------------------------
+// Utility PDF parsing
+// ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
   const sorted = [...items].sort((a, b) => {
@@ -185,7 +195,6 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
     }
   }
   rows.push(currentRow);
-
   return rows.map(row => {
     const first  = row[0];
     const last   = row[row.length - 1];
@@ -209,22 +218,17 @@ function findNumericNeighborForItem(
   const labelY  = labelItem.transform[5];
   const labelX1 = labelItem.transform[4] + labelItem.width;
   const Y_TOL   = 5;
-
   const mergedItems = buildMergedTokens(items);
-
   const sameRow = mergedItems.filter(it => {
     const tf = it.transform;
     return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
   });
   if (sameRow.length === 0) return { numBbox: null, numericDistance: Infinity };
-
   const numericTokens = sameRow.filter(it => /^-?[\d.,\s]+[-]?$/.test(it.str.trim()));
   const pool          = numericTokens.length > 0 ? numericTokens : sameRow;
-
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
-
     const exactMatch = pool.find(it => normalizeNumStr(it.str) === targetDigits);
     if (exactMatch) {
       const tf = exactMatch.transform;
@@ -233,7 +237,6 @@ function findNumericNeighborForItem(
         numericDistance: 0,
       };
     }
-
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
@@ -253,7 +256,6 @@ function findNumericNeighborForItem(
     }
     return { numBbox: null, numericDistance: Infinity };
   }
-
   const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return {
@@ -269,27 +271,19 @@ async function findSingleBboxWithItem(
 ): Promise<{ bbox: BBox; item: PdfTextItem } | null> {
   const seg = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
-
   const exactSingle = items.filter(it =>
     it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
   );
-
   const rowTokens = buildRowTokens(items);
   const exactRow  = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
   );
-
   const keywords = seg
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3)
     .slice(0, 5);
-
-  let candidates: PdfTextItem[] = [
-    ...exactSingle,
-    ...exactRow,
-  ];
-
+  let candidates: PdfTextItem[] = [...exactSingle, ...exactRow];
   if (candidates.length === 0 && keywords.length > 0) {
     const threshold = Math.max(1, Math.ceil(keywords.length / 2));
     const kwSingle = items.filter(it => {
@@ -303,7 +297,6 @@ async function findSingleBboxWithItem(
       return count >= threshold;
     });
     candidates = [...kwSingle, ...kwRow];
-
     if (candidates.length === 0 && keywords[0]) {
       const fbSingle = items.find(it => it.str.toLowerCase().includes(keywords[0]));
       const fbRow    = rowTokens.find(rt => rt.str.toLowerCase().includes(keywords[0]));
@@ -311,9 +304,7 @@ async function findSingleBboxWithItem(
       else if (fbRow) candidates.push(fbRow);
     }
   }
-
   if (candidates.length === 0) return null;
-
   const pickBest = (pool: PdfTextItem[]): PdfTextItem => {
     if (pool.length === 1 || fieldValue == null) return pool[0];
     let bestDist = Infinity;
@@ -324,7 +315,6 @@ async function findSingleBboxWithItem(
     }
     return best;
   };
-
   const winner = pickBest(candidates);
   const tf     = winner.transform;
   return {
@@ -333,7 +323,13 @@ async function findSingleBboxWithItem(
   };
 }
 
-const PAGE_OFFSET = 1;
+// ---------------------------------------------------------------------------
+// FIX #1: PAGE_OFFSET = 0
+// Il mock usa già pagine fisiche 1-based (SP=3, CE=4).
+// Il vecchio PAGE_OFFSET=1 sommava un ulteriore +1 cercando sulla pagina
+// sbagliata e non trovando mai nessuna bbox.
+// ---------------------------------------------------------------------------
+const PAGE_OFFSET = 0;
 
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -341,20 +337,16 @@ async function findBboxForField(
   field: ExtractedField<unknown>,
 ): Promise<MatchResult | null> {
   try {
-    const physicalPage = pageNum + PAGE_OFFSET;
+    const physicalPage = pageNum + PAGE_OFFSET;  // ora = pageNum (già fisico)
     const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
     const fv      = typeof field.value === 'number' ? field.value : null;
-
-    const label = lookupLabel(field);
+    const label   = lookupLabel(field);
     if (!label) return null;
-
     const r = await findSingleBboxWithItem(items, label, fv);
     if (!r) return null;
-
     const { numBbox } = findNumericNeighborForItem(items, r.item, fv);
-
     return {
       kind: 'single',
       bboxes: numBbox ? [r.bbox, numBbox] : [r.bbox],
@@ -375,25 +367,20 @@ async function findBboxForFreeText(
     const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
-
     const words = text
       .toLowerCase()
       .replace(/[^\w\u00c0-\u00ff\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 4)
       .slice(0, 6);
-
     if (words.length === 0) return [];
-
     const threshold = Math.max(1, Math.ceil(words.length * 0.5));
-
     const matchedSingle: PdfTextItem[] = [];
     for (const item of items) {
       const txt   = item.str.toLowerCase();
       const count = words.filter(w => txt.includes(w)).length;
       if (count >= threshold) matchedSingle.push(item);
     }
-
     const rowTokens = buildRowTokens(items);
     const matchedRow: PdfTextItem[] = [];
     for (const rt of rowTokens) {
@@ -401,16 +388,13 @@ async function findBboxForFreeText(
       const count = words.filter(w => txt.includes(w)).length;
       if (count >= threshold) matchedRow.push(rt);
     }
-
     const matched = matchedSingle.length > 0 ? matchedSingle : matchedRow;
-
     if (matched.length === 0) {
       const fb = items.find(it => it.str.toLowerCase().includes(words[0]))
                ?? rowTokens.find(rt => rt.str.toLowerCase().includes(words[0]));
       if (fb) return [{ x0: fb.transform[4], y0: fb.transform[5], x1: fb.transform[4] + fb.width, y1: fb.transform[5] + fb.height }];
       return [];
     }
-
     return matched.slice(0, 3).map(it => {
       const tf = it.transform;
       return { x0: tf[4], y0: tf[5], x1: tf[4] + it.width, y1: tf[5] + it.height };
@@ -429,9 +413,10 @@ interface NumericInputProps {
   onFocus?: () => void;
   className?: string;
   isUnavailable?: boolean;
+  readOnly?: boolean;
 }
 
-const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, className, isUnavailable }) => {
+const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, className, isUnavailable, readOnly }) => {
   const [displayValue, setDisplayValue] = useState(isUnavailable ? '' : formatIT(value ?? 0));
   const isEditing = useRef(false);
 
@@ -443,10 +428,12 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
     <input
       type="text" inputMode="numeric" className={className}
       value={displayValue}
+      readOnly={readOnly}
       placeholder={isUnavailable ? 'n.d.' : '0'}
-      onFocus={e => { isEditing.current = true; e.target.select(); onFocus?.(); }}
-      onChange={e => setDisplayValue(e.target.value.replace(/[^0-9.,-]/g, ''))}
+      onFocus={e => { if (!readOnly) { isEditing.current = true; e.target.select(); } onFocus?.(); }}
+      onChange={e => { if (!readOnly) setDisplayValue(e.target.value.replace(/[^0-9.,-]/g, '')); }}
       onBlur={() => {
+        if (readOnly) return;
         isEditing.current = false;
         if (displayValue.trim() === '') { onChange(null); setDisplayValue(''); }
         else { const p = parseIT(displayValue); onChange(p); setDisplayValue(formatIT(p)); }
@@ -458,8 +445,8 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
 // ---------------------------------------------------------------------------
 // Colori highlight
 // ---------------------------------------------------------------------------
-const HIGHLIGHT_LABEL_COLOR    = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
-const HIGHLIGHT_VALUE_COLOR    = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
+const HIGHLIGHT_LABEL_COLOR     = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
+const HIGHLIGHT_VALUE_COLOR     = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
 const HIGHLIGHT_CHECKLIST_COLOR = { bg: 'rgba(239,68,68,0.18)',   border: 'rgba(239,68,68,0.85)' };
 
 interface ActiveHighlight {
@@ -485,7 +472,6 @@ interface PdfViewerProps {
 const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages,  setTotalPages]  = useState(1);
-
   const containerRef     = useRef<HTMLDivElement>(null);
   const canvasRef        = useRef<HTMLCanvasElement>(null);
   const textLayerRef     = useRef<HTMLDivElement>(null);
@@ -496,39 +482,27 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const renderSeqRef     = useRef(0);
   const renderTaskRef    = useRef<pdfjsLib.RenderTask | null>(null);
   const textLayerTaskRef = useRef<TextLayer | null>(null);
-  // FIX: renderingRef rimosso — era la causa del blocco. Al suo posto usiamo
-  // renderSeqRef per la cancellazione e lasciamo che i render si accodino.
-  // cssViewportRef mantiene l'ultimo viewport CSS valido per drawHighlightsOnly.
   const cssViewportRef   = useRef<pdfjsLib.PageViewport | null>(null);
 
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
 
-  // ---------------------------------------------------------------------------
-  // drawHighlights: disegna i box highlight sull'hlLayer usando il viewport CSS.
-  // Usato sia dentro doRender (al termine del render) sia da drawHighlightsOnly.
-  // ---------------------------------------------------------------------------
   const drawHighlights = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport) => {
     const hlDiv = hlLayerRef.current;
     if (!hlDiv) return;
     hlDiv.innerHTML = '';
     if (!hl || hl.bboxes.length === 0) return;
-
     hl.bboxes.forEach((bbox, idx) => {
       if (isBboxEmpty(bbox)) return;
       const colors = hl.isChecklist
         ? HIGHLIGHT_CHECKLIST_COLOR
         : idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
-
-      // viewport è sempre cssViewport (BASE_SCALE senza DPR):
-      // convertToViewportPoint restituisce direttamente coordinate CSS.
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
       const x = Math.min(ax, bx);
       const y = Math.min(ay, by);
       const w = Math.abs(bx - ax);
       const h = Math.abs(by - ay);
-
       const div = document.createElement('div');
       div.style.cssText = [
         'position:absolute',
@@ -544,21 +518,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     });
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // drawHighlightsOnly: disegna i box sull'hlLayer SENZA ri-renderizzare il canvas.
-  // Chiamato quando la pagina è già quella corretta e cambia solo l'highlight.
-  // FIX PRINCIPALE: questo path evita completamente il re-render del canvas
-  // e bypassa tutti i problemi di renderingRef/race condition.
-  // ---------------------------------------------------------------------------
   const drawHighlightsOnly = useCallback((hl: ActiveHighlight | null) => {
     const vp = cssViewportRef.current;
     if (!vp) return;
     drawHighlights(hl, vp);
   }, [drawHighlights]);
 
-  // ---------------------------------------------------------------------------
-  // doRender: renderizza canvas + textLayer + highlight per la pagina corrente.
-  // ---------------------------------------------------------------------------
   const doRender = useCallback(async (seq: number) => {
     const pdf    = pdfDocRef.current;
     const canvas = canvasRef.current;
@@ -566,8 +531,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const page   = currentPageRef.current;
     const hl     = highlightRef.current;
     if (!pdf || !canvas || !tlDiv) return;
-
-    // Cancella render e textLayer precedenti
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch { /**/ }
       renderTaskRef.current = null;
@@ -576,31 +539,20 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       try { textLayerTaskRef.current.cancel(); } catch { /**/ }
       textLayerTaskRef.current = null;
     }
-
     try {
       const pdfPage = await pdf.getPage(page);
-      // Controlla seq DOPO l'await (potrebbe essere arrivato un render più recente)
       if (seq !== renderSeqRef.current) return;
-
       const dpr        = window.devicePixelRatio || 1;
       const BASE_SCALE = 1.5;
-
-      // canvasViewport: alta risoluzione fisica per il canvas (scale * dpr)
       const canvasViewport = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
-      // cssViewport: coordinate CSS pure (BASE_SCALE senza DPR) per textLayer,
-      // hlLayer e drawHighlights
-      const cssViewport = pdfPage.getViewport({ scale: BASE_SCALE });
-
-      // Salva il viewport CSS per drawHighlightsOnly (usato quando cambia solo hl)
+      const cssViewport    = pdfPage.getViewport({ scale: BASE_SCALE });
       cssViewportRef.current = cssViewport;
-
       canvas.width  = canvasViewport.width;
       canvas.height = canvasViewport.height;
       const cssW = cssViewport.width;
       const cssH = cssViewport.height;
       canvas.style.width  = `${cssW}px`;
       canvas.style.height = `${cssH}px`;
-
       tlDiv.style.width  = `${cssW}px`;
       tlDiv.style.height = `${cssH}px`;
       tlDiv.innerHTML    = '';
@@ -609,17 +561,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         hlLayerRef.current.style.height = `${cssH}px`;
         hlLayerRef.current.innerHTML    = '';
       }
-
       const ctx  = canvas.getContext('2d')!;
       const task = pdfPage.render({ canvasContext: ctx, viewport: canvasViewport });
       renderTaskRef.current = task;
       await task.promise;
       renderTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
-
       const textContent = await pdfPage.getTextContent();
       if (seq !== renderSeqRef.current) return;
-
       const tl = new TextLayer({
         textContentSource: textContent,
         container: tlDiv,
@@ -629,16 +578,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       await tl.render();
       textLayerTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
-
-      // Disegna highlight al termine del render se la pagina corrisponde
       if (hl && hl.page === page) drawHighlights(hl, cssViewport);
-
     } catch (e: unknown) {
       if ((e as { name?: string })?.name !== 'RenderingCancelledException')
         console.warn('[PdfViewer] render error:', e);
     }
-    // FIX: nessun finally con renderingRef — la gestione della concorrenza
-    // è affidata esclusivamente a renderSeqRef.
   }, [drawHighlights]);
 
   const requestRender = useCallback(() => {
@@ -653,7 +597,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [requestRender]);
 
-  // Carica il PDF quando cambia il file
   useEffect(() => {
     pdfDocRef.current = null;
     cssViewportRef.current = null;
@@ -672,22 +615,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelled = true; };
   }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reagisce ai cambi di highlight
   useEffect(() => {
     highlightRef.current = highlight;
-
     if (!pdfDocRef.current) return;
-
     const targetPage = highlight?.page ?? null;
-
     if (targetPage && targetPage !== currentPageRef.current) {
-      // Pagina diversa: cambia pagina e ri-renderizza (incluso highlight al termine)
       currentPageRef.current = targetPage;
       setCurrentPage(targetPage);
       requestRender();
     } else {
-      // FIX PRINCIPALE: stessa pagina (o nessuna pagina) — disegna solo i box
-      // senza toccare canvas né textLayer. Evita re-render inutili e race conditions.
       drawHighlightsOnly(highlight);
     }
   }, [highlight]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -726,25 +662,20 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           >Succ &#8250;</button>
         </div>
       </div>
-
       <div
         className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100"
         style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
       >
         <div ref={containerRef} className="relative shadow-2xl inline-block">
           <canvas ref={canvasRef} className="block" />
-          <div
-            ref={textLayerRef}
-            className="pdfTextLayer"
+          <div ref={textLayerRef} className="pdfTextLayer"
             style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
           />
-          <div
-            ref={hlLayerRef}
+          <div ref={hlLayerRef}
             style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
           />
         </div>
       </div>
-
       {legendItems.length > 0 && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-3 flex-wrap flex-shrink-0">
           {legendItems.map((item, i) => (
@@ -769,10 +700,12 @@ interface Props {
   onApprove: (updatedData: ExtractedData) => void;
 }
 
+// FIX #2: ebitda RIMOSSO da YEAR_FIELDS — è DerivedField, non ha page/rawLabel.
+// ammortamenti AGGIUNTO — è ExtractedField RAW con riga CE propria.
 const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
   { key: 'ricavi',               label: 'Ricavi' },
-  { key: 'ebitda',               label: 'EBITDA' },
   { key: 'ebit',                 label: 'EBIT' },
+  { key: 'ammortamenti',         label: 'Ammortamenti' },
   { key: 'utileNetto',           label: 'Utile Netto' },
   { key: 'interessiPassivi',     label: 'Interessi Passivi' },
   { key: 'totaleAttivo',         label: 'Totale Attivo' },
@@ -813,7 +746,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
-
   const pdfDocCacheRef = useRef<Map<number, pdfjsLib.PDFDocumentProxy>>(new Map());
 
   const getPdfDoc = useCallback(async (fileIdx: number, file: File): Promise<pdfjsLib.PDFDocumentProxy> => {
@@ -823,24 +755,26 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
+  // FIX #3: guard isDerived — non tenta highlight su DerivedField (no page).
+  // Un DerivedField ha solo { value, formula } — nessun page, rawLabel, rawText.
   const handleFieldFocus = useCallback(async (
     field: ExtractedField<unknown> | null,
     colorIndex: number,
     fileIdx: number,
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
-    if (!field?.page || (!field.rawText && !field.rawLabel)) { setActiveHighlight(null); return; }
-
-    // Imposta subito un placeholder per far scattare il cambio pagina nel viewer
+    // Se manca page o manca qualsiasi chiave di ricerca: nessun highlight
+    if (!field?.page || (!field.rawText && !field.rawLabel)) {
+      setActiveHighlight(null);
+      return;
+    }
+    // Placeholder per far scattare il cambio pagina nel viewer
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
-
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
       const result = await findBboxForField(doc, field.page, field);
       if (!result) return;
-      // Aggiorna con le bbox reali: se la pagina è già quella corretta,
-      // PdfViewer chiamerà drawHighlightsOnly senza ri-renderizzare il canvas.
       setActiveHighlight({
         page: field.page,
         bboxes: result.bboxes,
@@ -860,7 +794,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       setActiveHighlight(null);
       return;
     }
-
     setActiveHighlight({
       page,
       bboxes: [EMPTY_BBOX],
@@ -869,7 +802,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       isMultiSum: false,
       isChecklist: true,
     });
-
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
       const bboxes = await findBboxForFreeText(doc, page, fonteTestuale);
@@ -884,10 +816,16 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
+  // FIX #4: updateYearField ricalcola i DerivedField dopo ogni modifica RAW.
+  // Necessario quando l'utente modifica ebit o ammortamenti: ebitda deve
+  // aggiornarsi immediatamente senza attendere un nuovo ciclo di estrazione AI.
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
+      // Applica la modifica al campo RAW
       (next.yearsData[yearIdx][key] as ExtractedField<number>).value = value;
+      // Ricalcola tutti i DerivedField dell'anno (ebitda = ebit + ammortamenti)
+      computeDerivedFields(next.yearsData[yearIdx]);
       return next;
     });
   };
@@ -949,9 +887,14 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
             if (!year) return null;
+
+            // ebitda è DerivedField: leggiamo value e formula direttamente
+            const ebitdaField = year.ebitda as DerivedField<number>;
+
             return (
               <div className="space-y-3">
                 <p className="text-xs text-slate-500 mb-1">Verifica e correggi i dati estratti. Clicca su un campo per evidenziare la voce nel PDF.</p>
+
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
@@ -965,6 +908,24 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   />
                 </div>
 
+                {/* FIX #5: EBITDA in blocco separato SOLA LETTURA, prima dei campi RAW */}
+                <div>
+                  <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
+                    EBITDA
+                    <span className="ml-1 text-[9px] font-semibold text-sky-600 bg-sky-50 border border-sky-200 rounded px-1 py-0.5">calcolato</span>
+                  </label>
+                  <NumericInput
+                    value={ebitdaField?.value}
+                    readOnly={true}
+                    className="w-full px-3 py-2 border border-sky-200 rounded-lg text-sm bg-sky-50 text-sky-700 font-semibold cursor-default select-none"
+                    onChange={() => { /* sola lettura */ }}
+                  />
+                  {ebitdaField?.formula && (
+                    <p className="mt-0.5 text-[10px] text-sky-500 italic">{ebitdaField.formula}</p>
+                  )}
+                </div>
+
+                {/* Campi RAW — click attiva highlight nel PDF */}
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
@@ -984,11 +945,15 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         )}
                       </label>
                       <NumericInput
-                        value={field?.value} isUnavailable={isUnavail}
+                        value={field?.value}
+                        isUnavailable={isUnavail}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          isUnavail ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
-                          : hasPage ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
-                          : 'border-slate-200 focus:ring-slate-300'}`}
+                          isUnavail
+                            ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
+                            : hasPage
+                            ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
+                            : 'border-slate-200 focus:ring-slate-300'
+                        }`}
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
@@ -1019,9 +984,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         <div
                           key={key}
                           className={`rounded-lg border p-3 ${badgeBg} ${hasSource ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`}
-                          onClick={() => {
-                            if (hasSource) handleChecklistClick(item.fonteTestuale, item.page, yearIdx);
-                          }}
+                          onClick={() => { if (hasSource) handleChecklistClick(item.fonteTestuale, item.page, yearIdx); }}
                           title={hasSource ? 'Clicca per evidenziare nel PDF' : undefined}
                         >
                           <div className="flex items-start justify-between gap-2 mb-1">
