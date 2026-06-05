@@ -24,6 +24,11 @@ type PdfTextItem = { str: string; transform: number[] };
 const isPdfTextItem = (item: unknown): item is PdfTextItem =>
   typeof item === 'object' && item !== null && 'str' in item && 'transform' in item;
 
+// ─── Limite caratteri per PDF inviato all'AI ─────────────────────────────────
+// OpenInference restituisce 502 "could not decode header" quando il body HTTP
+// supera ~100 KB. Il prompt contrattuale occupa ~8 KB; lasciamo ~80 KB al testo PDF.
+const MAX_PDF_CHARS = 80_000;
+
 // ─── Config modelli dal KV Worker ────────────────────────────────────────
 interface ModelConfig {
   extract:   { primary: string; fallback: string };
@@ -85,7 +90,63 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   return fullText;
 };
 
+/**
+ * Tronca il testo PDF a MAX_PDF_CHARS mantenendo le prime pagine intere.
+ * Aggiunge un avviso in coda se troncato, così il modello sa che il documento
+ * è parziale e non alucina valori mancanti.
+ */
+const truncatePdfText = (text: string, maxChars: number): string => {
+  if (text.length <= maxChars) return text;
+  const truncated = text.slice(0, maxChars);
+  // Tronca all'ultima riga completa per non spezzare una voce a metà
+  const lastNewline = truncated.lastIndexOf('\n');
+  const clean = lastNewline > maxChars * 0.8 ? truncated.slice(0, lastNewline) : truncated;
+  return clean + '\n\n[DOCUMENTO TRONCATO — le pagine successive non sono state incluse per limiti di contesto]';
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Estrae il contenuto testuale dalla risposta OpenRouter.
+ * Gestisce il caso in cui il modello usa il campo `reasoning` invece di `content`
+ * (comportamento osservato su openai/gpt-oss-120b:free e modelli con extended thinking).
+ */
+const extractContent = (data: {
+  choices?: {
+    message?: {
+      content?: string | null;
+      reasoning?: string | null;
+      reasoning_details?: { text?: string }[];
+    };
+  }[];
+}): string => {
+  const msg = data.choices?.[0]?.message;
+  if (!msg) return '';
+
+  // Caso normale
+  if (msg.content && msg.content.trim() !== '') return msg.content;
+
+  // Fallback 1: campo `reasoning` diretto (alcuni provider free lo usano come output)
+  if (msg.reasoning && msg.reasoning.trim() !== '') {
+    // Il reasoning può contenere testo misto; proviamo a estrarre il blocco JSON
+    const jsonMatch = msg.reasoning.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return jsonMatch[0];
+    return msg.reasoning;
+  }
+
+  // Fallback 2: reasoning_details[].text
+  const rdText = msg.reasoning_details
+    ?.map((d) => d.text ?? '')
+    .join('')
+    .trim();
+  if (rdText) {
+    const jsonMatch = rdText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return jsonMatch[0];
+    return rdText;
+  }
+
+  return '';
+};
 
 const callModel = async (
   model: string,
@@ -108,10 +169,23 @@ const callModel = async (
   });
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(`Errore OpenRouter ${response.status}: ${errorData.error?.message ?? 'Errore nella richiesta'}`);
+    const msg = errorData.error?.message ?? 'Errore nella richiesta';
+    // 502 da OpenInference = payload troppo grande o upstream temporaneamente indisponibile
+    // lo trattiamo come retryable così il cascade prova il modello fallback
+    const status = response.status;
+    const err = new Error(`Errore OpenRouter ${status}: ${msg}`);
+    // Marca l'errore come retryable se 502/503/429
+    if (status === 502 || status === 503 || status === 429) {
+      (err as Error & { retryable: boolean }).retryable = true;
+    }
+    throw err;
   }
-  const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content ?? '';
+  const data = await response.json() as Parameters<typeof extractContent>[0];
+  const content = extractContent(data);
+  if (!content) {
+    throw new Error('Risposta AI vuota: il modello non ha restituito contenuto utilizzabile.');
+  }
+  return content;
 };
 
 const withRetry = async (
@@ -126,10 +200,15 @@ const withRetry = async (
       return await fn();
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      const is429 = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
-      if (!is429 || attempt === maxAttempts) throw lastErr;
+      const isRetryable =
+        (lastErr as Error & { retryable?: boolean }).retryable === true ||
+        lastErr.message.includes('429') ||
+        lastErr.message.includes('503') ||
+        lastErr.message.includes('502') ||
+        lastErr.message.includes('overload');
+      if (!isRetryable || attempt === maxAttempts) throw lastErr;
       const delay = baseDelayMs * attempt;
-      onProgress?.(`⏳ Rate limit — attendo ${delay / 1000}s (tentativo ${attempt}/${maxAttempts})...`);
+      onProgress?.(`⏳ Errore temporaneo — attendo ${delay / 1000}s (tentativo ${attempt}/${maxAttempts})...`);
       await sleep(delay);
     }
   }
@@ -152,9 +231,14 @@ const callWithCascade = async (
       return await withRetry(() => callModel(m, messages, onProgress), onProgress);
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      const isRetryable = lastErr.message.includes('429') || lastErr.message.includes('503') || lastErr.message.includes('overload');
+      const isRetryable =
+        (lastErr as Error & { retryable?: boolean }).retryable === true ||
+        lastErr.message.includes('429') ||
+        lastErr.message.includes('503') ||
+        lastErr.message.includes('502') ||
+        lastErr.message.includes('overload');
       if (isRetryable && m !== modelsToTry[modelsToTry.length - 1]) {
-        onProgress?.(`⚡ ${m.split('/').pop()} esaurito, passo a modello successivo...`);
+        onProgress?.(`⚡ ${m.split('/').pop()} non disponibile, passo a modello successivo...`);
         await sleep(1000);
         continue;
       }
@@ -207,7 +291,11 @@ export const extractDataFromPdfs = async (
   const docTexts: { fileName: string; text: string }[] = [];
   for (const file of files) {
     onProgress?.(`Lettura: ${file.name}`);
-    const text = await extractTextFromPdf(file);
+    const rawText = await extractTextFromPdf(file);
+    const text    = truncatePdfText(rawText, MAX_PDF_CHARS);
+    if (rawText.length > MAX_PDF_CHARS) {
+      onProgress?.(`⚠️ ${file.name}: testo troncato a ${MAX_PDF_CHARS.toLocaleString()} caratteri (originale: ${rawText.length.toLocaleString()})`);
+    }
     docTexts.push({ fileName: file.name, text });
   }
 
