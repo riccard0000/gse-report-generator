@@ -65,16 +65,11 @@ function cleanRawText(raw: string, maxLen = 60): string {
 // ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
 
-// kind è l'unica fonte di verità per badge UI e comportamento highlight
 type MatchResult =
   | { kind: 'single';    bboxes: BBox[];  segmentNames: string[] }
-  | { kind: 'formula';   bboxes: BBox[];  segmentNames: string[] }  // no badge Σ, highlight singolo + numero
-  | { kind: 'multi-sum'; bboxes: BBox[];  segmentNames: string[] }; // badge Σ con nomi, solo label-bbox
+  | { kind: 'formula';   bboxes: BBox[];  segmentNames: string[] }
+  | { kind: 'multi-sum'; bboxes: BBox[];  segmentNames: string[] };
 
-// ---------------------------------------------------------------------------
-// Determina se un rawText con "+" è formula calcolata (segmenti con cifre)
-// o somma di righe bilancio (segmenti senza cifre).
-// ---------------------------------------------------------------------------
 function isCalculatedFormula(segments: string[]): boolean {
   const withDigits = segments.filter(s => /\d/.test(s)).length;
   return withDigits >= Math.ceil(segments.length / 2);
@@ -85,11 +80,8 @@ function segmentDisplayName(seg: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cerca TUTTI i token che corrispondono al segmento testuale.
-// Se fieldValue è fornito, sceglie il candidato la cui riga contiene
-// il numero più vicino al valore atteso — risolvendo il caso di etichette
-// duplicate (es. "Totale debiti" in SP e CE sulla stessa pagina).
-// Restituisce il candidato migliore con la sua bbox.
+// Cerca il token numerico sulla stessa riga di labelItem il cui valore è
+// più vicino a fieldValue. Restituisce bbox + distanza.
 // ---------------------------------------------------------------------------
 function findNumericNeighborForItem(
   items: PdfTextItem[],
@@ -101,6 +93,7 @@ function findNumericNeighborForItem(
   const labelX1 = labelTf[4] + labelItem.width;
   const Y_TOL   = 5;
 
+  // Tutti i token a destra dell'etichetta sulla stessa riga
   const sameRow = items.filter(it => {
     const tf = it.transform;
     return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
@@ -108,26 +101,26 @@ function findNumericNeighborForItem(
   if (sameRow.length === 0) return { numBbox: null, numericDistance: Infinity };
 
   const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
-  const candidates    = numericTokens.length > 0 ? numericTokens : sameRow;
+  const pool          = numericTokens.length > 0 ? numericTokens : sameRow;
 
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal = Math.abs(fieldValue);
-    const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
 
-    // Cerca prima il match esatto per valore
-    const byValue = candidates.find(it => {
+    // 1. Match esatto sui digit strip
+    const reprs = [String(Math.round(absVal)), absVal.toFixed(0)];
+    const exact = pool.find(it => {
       const s = it.str.replace(/[.,\s-]/g, '');
       return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
     });
-    if (byValue) {
-      const tf = byValue.transform;
+    if (exact) {
+      const tf = exact.transform;
       return {
-        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + byValue.width, y1: tf[5] + byValue.height },
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + exact.width, y1: tf[5] + exact.height },
         numericDistance: 0,
       };
     }
 
-    // Nessun match esatto: calcola la distanza dal valore atteso per ogni candidato numerico
+    // 2. Token numerico più vicino per valore
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of numericTokens) {
@@ -146,8 +139,8 @@ function findNumericNeighborForItem(
     }
   }
 
-  // Fallback: token numerico più vicino a destra
-  const closest = candidates.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
+  // Fallback: token più a destra
+  const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return {
     numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height },
@@ -155,6 +148,11 @@ function findNumericNeighborForItem(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Cerca tutti i token che matchano il segmento testuale.
+// Se fieldValue è disponibile, discrimina tra duplicati scegliendo quello
+// la cui riga contiene il numero più vicino al valore atteso.
+// ---------------------------------------------------------------------------
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
   segment: string,
@@ -163,11 +161,9 @@ async function findSingleBboxWithItem(
   const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
-  // --- Raccoglie TUTTI i candidati (match esatto prima, poi keyword) ---
   const exactMatches = items.filter(it =>
     it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
   );
-
   let candidates: PdfTextItem[] = exactMatches;
 
   if (candidates.length === 0) {
@@ -186,8 +182,6 @@ async function findSingleBboxWithItem(
         if (count >= threshold) kwMatches.push(item);
       }
       candidates = kwMatches;
-
-      // Ultimo fallback: primo keyword
       if (candidates.length === 0) {
         candidates = items.filter(it => it.str.toLowerCase().includes(keywords[0]));
       }
@@ -196,51 +190,34 @@ async function findSingleBboxWithItem(
 
   if (candidates.length === 0) return null;
 
-  // --- Con un solo candidato non serve discriminare ---
   if (candidates.length === 1) {
     const found = candidates[0];
     const tf = found.transform;
-    return {
-      bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height },
-      item: found,
-    };
+    return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
   }
 
-  // --- Più candidati: scegli quello la cui riga ha il numero più vicino a fieldValue ---
+  // Più candidati: scegli quello con valore numerico più vicino a fieldValue
   if (fieldValue !== null && fieldValue !== undefined) {
     let bestDist = Infinity;
     let bestItem = candidates[0];
     for (const c of candidates) {
       const { numericDistance } = findNumericNeighborForItem(items, c, fieldValue);
-      if (numericDistance < bestDist) {
-        bestDist = numericDistance;
-        bestItem = c;
-      }
+      if (numericDistance < bestDist) { bestDist = numericDistance; bestItem = c; }
     }
     const tf = bestItem.transform;
-    return {
-      bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height },
-      item: bestItem,
-    };
+    return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height }, item: bestItem };
   }
 
-  // Nessun fieldValue disponibile: usa il primo candidato (comportamento precedente)
   const found = candidates[0];
   const tf = found.transform;
-  return {
-    bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height },
-    item: found,
-  };
+  return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
 }
 
-function findNumericNeighbor(
-  items: PdfTextItem[],
-  labelItem: PdfTextItem,
-  fieldValue: number | null | undefined,
-): BBox | null {
-  return findNumericNeighborForItem(items, labelItem, fieldValue).numBbox;
-}
-
+// ---------------------------------------------------------------------------
+// Core: dato un rawText (e il fieldValue atteso), restituisce MatchResult
+// con SEMPRE 2 bbox per single/formula: [etichetta, numero].
+// Il numero viene cercato per valore esatto sulla riga — non per posizione.
+// ---------------------------------------------------------------------------
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
@@ -257,26 +234,32 @@ async function findBboxByText(
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
+    // ── CASO SINGLE ──────────────────────────────────────────────────────────
     if (rawSegments.length <= 1) {
       const r = await findSingleBboxWithItem(items, rawText, fieldValue);
       if (!r) return null;
-      const numBbox = findNumericNeighbor(items, r.item, fieldValue ?? null);
-      const bboxes  = numBbox ? [r.bbox, numBbox] : [r.bbox];
+      // Cerca il numero esatto sulla riga: se fieldValue è disponibile lo
+      // usa per trovare il token corretto anche quando ci sono più valori.
+      const { numBbox } = findNumericNeighborForItem(items, r.item, fieldValue ?? null);
+      const bboxes = numBbox ? [r.bbox, numBbox] : [r.bbox];
       return { kind: 'single', bboxes, segmentNames: [rawText] };
     }
 
+    // ── CASO FORMULA (rawText contiene cifre → es. "EBIT 120.000 + amm. 30.000") ──
     if (isCalculatedFormula(rawSegments)) {
       const firstSeg  = rawSegments[0];
       const nameOnly  = segmentDisplayName(firstSeg);
       const lookupSeg = nameOnly.length >= 3 ? nameOnly : firstSeg;
       const r = await findSingleBboxWithItem(items, lookupSeg, fieldValue);
       if (!r) return null;
-      const numBbox  = findNumericNeighbor(items, r.item, fieldValue ?? null);
+      const { numBbox } = findNumericNeighborForItem(items, r.item, fieldValue ?? null);
       const bboxes   = numBbox ? [r.bbox, numBbox] : [r.bbox];
       const segNames = rawSegments.map(segmentDisplayName).filter(Boolean);
       return { kind: 'formula', bboxes, segmentNames: segNames };
     }
 
+    // ── CASO MULTI-SUM (somma di righe distinte) ──────────────────────────────
+    // Per ogni segmento evidenziamo solo l'etichetta (nessun valore univoco).
     const bboxes:       BBox[]   = [];
     const segmentNames: string[] = [];
 
@@ -362,6 +345,8 @@ const NumericInput: React.FC<NumericInputProps> = ({
 // ---------------------------------------------------------------------------
 // Colori highlight
 // ---------------------------------------------------------------------------
+const HIGHLIGHT_LABEL_COLOR  = { fill: 'rgba(59,130,246,0.22)',  stroke: 'rgba(59,130,246,0.85)'  };
+const HIGHLIGHT_VALUE_COLOR  = { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  };
 const MULTI_HIGHLIGHT_COLORS = [
   { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.90)'  },
   { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  },
@@ -382,7 +367,7 @@ const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
 function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
 
 // ---------------------------------------------------------------------------
-// PdfViewer — fix: cancella il render in volo prima di avviarne uno nuovo
+// PdfViewer
 // ---------------------------------------------------------------------------
 interface PdfViewerProps {
   file:      File;
@@ -397,9 +382,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const currentPageRef = useRef(1);
   const highlightRef   = useRef<ActiveHighlight | null>(null);
   const renderSeqRef   = useRef(0);
-  // Tiene traccia del RenderTask pdf.js in corso per poterlo cancellare
   const renderTaskRef  = useRef<pdfjsLib.RenderTask | null>(null);
-  // Guardia rientranza: impedisce due doRender concorrenti sullo stesso canvas
   const renderingRef   = useRef(false);
 
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
@@ -413,13 +396,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (!pdf || !canvas) return;
     if (seq !== renderSeqRef.current) return;
 
-    // Cancella il render precedente se ancora in volo
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch { /* ignorato */ }
       renderTaskRef.current = null;
     }
-
-    // Attendi che il render precedente abbia rilasciato il canvas
     if (renderingRef.current) return;
     renderingRef.current = true;
 
@@ -434,7 +414,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       const ctx  = canvas.getContext('2d')!;
       const task = pdfPage.render({ canvasContext: ctx, viewport });
       renderTaskRef.current = task;
-
       await task.promise;
       renderTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
@@ -442,8 +421,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       if (hl && hl.page === page && hl.bboxes.length > 0) {
         hl.bboxes.forEach((bbox, idx) => {
           if (isBboxEmpty(bbox)) return;
-          const colorIdx = hl.isMultiSum ? idx : 0;
-          const colors   = MULTI_HIGHLIGHT_COLORS[colorIdx % MULTI_HIGHLIGHT_COLORS.length];
+
+          // single/formula: idx 0 = etichetta (blu), idx 1 = valore (verde)
+          // multi-sum: colori ciclici per segmento
+          let colors: { fill: string; stroke: string };
+          if (hl.isMultiSum) {
+            colors = MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length];
+          } else {
+            colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
+          }
+
           const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
           const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
           ctx.save();
@@ -456,7 +443,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         });
       }
     } catch (e: unknown) {
-      // RenderingCancelledException è attesa: non loggare
       const name = (e as { name?: string })?.name;
       if (name !== 'RenderingCancelledException') {
         console.warn('[PdfViewer] render error:', e);
@@ -468,7 +454,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   const requestRender = useCallback(() => {
     const seq = ++renderSeqRef.current;
-    // Cancella task in volo prima ancora di chiamare doRender
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch { /* ignorato */ }
       renderTaskRef.current = null;
@@ -482,7 +467,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [requestRender]);
 
-  // Caricamento iniziale del PDF
   useEffect(() => {
     pdfDocRef.current = null;
     renderSeqRef.current++;
@@ -507,28 +491,31 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelled = true; };
   }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Aggiornamento highlight
   useEffect(() => {
     highlightRef.current = highlight;
     if (highlight?.page && highlight.page !== currentPageRef.current) {
       currentPageRef.current = highlight.page;
       setCurrentPage(highlight.page);
     }
-    // Non chiamare requestRender se il documento non è ancora pronto
     if (pdfDocRef.current) requestRender();
   }, [highlight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
-  const segmentNames  = highlight?.segmentNames ?? [];
 
-  const legendItems = highlight?.isMultiSum
-    ? visibleBboxes.map((_, i) => ({
-        colorIdx: i % MULTI_HIGHLIGHT_COLORS.length,
-        name:     segmentNames[i] ?? `Voce ${i + 1}`,
-      }))
-    : visibleBboxes.length > 0
-      ? [{ colorIdx: 0, name: segmentNames[0] ?? 'Evidenziato' }]
-      : [];
+  // Legenda: per single/formula mostra "Etichetta" + "Valore"; per multi-sum mostra i nomi
+  const legendItems = (() => {
+    if (!highlight || visibleBboxes.length === 0) return [];
+    if (highlight.isMultiSum) {
+      return visibleBboxes.map((_, i) => ({
+        color: MULTI_HIGHLIGHT_COLORS[i % MULTI_HIGHLIGHT_COLORS.length].stroke,
+        name:  highlight.segmentNames[i] ?? `Voce ${i + 1}`,
+      }));
+    }
+    const items = [];
+    if (visibleBboxes[0]) items.push({ color: HIGHLIGHT_LABEL_COLOR.stroke,  name: 'Etichetta' });
+    if (visibleBboxes[1]) items.push({ color: HIGHLIGHT_VALUE_COLOR.stroke, name: 'Valore' });
+    return items;
+  })();
 
   return (
     <>
@@ -557,7 +544,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
             <span key={i} className="flex items-center gap-1">
               <span
                 className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: MULTI_HIGHLIGHT_COLORS[item.colorIdx].stroke }}
+                style={{ backgroundColor: item.color }}
               />
               <span className="text-xs text-slate-600 font-medium">{item.name}</span>
               <span className="text-xs text-slate-400">&middot; pag. {highlight!.page}</span>
@@ -646,6 +633,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
+  // handleFieldFocus: ignora field.bbox precompilato dal modello e fa sempre
+  // ricerca live su pdfjs con etichetta + valore numerico atteso.
   const handleFieldFocus = useCallback(async (
     field: ExtractedField<any> | null,
     colorIndex: number,
@@ -653,45 +642,42 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
-    if (field?.bbox && field?.page) {
-      setActiveHighlight({
-        page: field.page, bboxes: [field.bbox],
-        segmentNames: [field.rawText ?? ''], color, isMultiSum: false,
-      });
+    // Nessuna informazione utile
+    if (!field?.page || !field?.rawText) {
+      setActiveHighlight(null);
       return;
     }
 
-    if (field?.page && field.value === null) {
-      setActiveHighlight({
-        page: field.page, bboxes: [EMPTY_BBOX],
-        segmentNames: [], color, isMultiSum: false,
-      });
-      return;
-    }
+    // Placeholder: naviga alla pagina mentre la ricerca è in corso
+    setActiveHighlight({
+      page: field.page, bboxes: [EMPTY_BBOX],
+      segmentNames: [], color, isMultiSum: false,
+    });
 
-    if (field?.page && field?.rawText && files[fileIdx]) {
-      setActiveHighlight({
-        page: field.page, bboxes: [EMPTY_BBOX],
-        segmentNames: [], color, isMultiSum: false,
-      });
-      try {
-        const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-        const result = await findBboxByText(doc, field.page, field.rawText, field.value as number | null);
-        if (!result) return;
-        setActiveHighlight({
-          page:         field.page,
-          bboxes:       result.bboxes,
-          segmentNames: result.segmentNames,
-          color,
-          isMultiSum:   result.kind === 'multi-sum',
-        });
-      } catch {
-        // lascia navigate-only
-      }
-      return;
-    }
+    if (!files[fileIdx]) return;
 
-    setActiveHighlight(null);
+    try {
+      const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
+      // Passa sempre field.value come fieldValue → findNumericNeighborForItem
+      // usa il valore numerico atteso per trovare il token corretto tra più
+      // candidati sulla stessa riga.
+      const result = await findBboxByText(
+        doc,
+        field.page,
+        field.rawText,
+        field.value as number | null,
+      );
+      if (!result) return;
+      setActiveHighlight({
+        page:         field.page,
+        bboxes:       result.bboxes,
+        segmentNames: result.segmentNames,
+        color,
+        isMultiSum:   result.kind === 'multi-sum',
+      });
+    } catch {
+      // lascia navigate-only
+    }
   }, [files, getPdfDoc]);
 
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
@@ -794,9 +780,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
-                  const hasBbox   = !!field?.bbox && !!field?.page;
                   const hasPage   = !!field?.page;
-                  const badgeColor = hasBbox ? 'text-blue-500' : hasPage ? 'text-slate-400' : '';
 
                   const kind      = matchKindFromRawText(field?.rawText);
                   const showSigma = kind === 'multi-sum';
@@ -808,7 +792,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         {label}
 
                         {hasPage && (
-                          <span className={`inline-flex items-center gap-0.5 text-[9px] font-medium ${badgeColor}`}>
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-medium text-slate-400">
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
                           </span>
                         )}
