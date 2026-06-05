@@ -2,27 +2,19 @@ name = "gse-proxy"
 main = "index.js"
 compatibility_date = "2024-01-01"
 
-# ── KV Namespaces ────────────────────────────────────────────────────────────────────
-# Per creare ciascun namespace:
-#   wrangler kv:namespace create GSE_CONFIG
-#   wrangler kv:namespace create GSE_PROMPT
-#   wrangler kv:namespace create HISTORY
-# Poi sostituire gli id qui sotto con quelli restituiti dai comandi.
-
-# Configurazione modelli AI (primary/fallback)
+# ── KV Namespace ──────────────────────────────────────────────────────────────
+# Un solo namespace GSE_CONFIG che contiene tutte le chiavi:
+#   gse_model_config  → configurazione modelli AI
+#   gse_prompt        → prompt custom estrazione e narrativa
+#   history_index     → array metadati storico estrazioni
+#   history:<ts>:<cf> → record completo singola estrazione
+#
+# Per ottenere l'ID del namespace già creato:
+#   wrangler kv:namespace list
+# Poi sostituire l'id qui sotto.
 [[kv_namespaces]]
 binding = "GSE_CONFIG"
 id      = "SOSTITUIRE_CON_ID_REALE"
 
-# Prompt custom (estrazione + narrativa)
-[[kv_namespaces]]
-binding = "GSE_PROMPT"
-id      = "SOSTITUIRE_CON_ID_REALE"
-
-# Storico estrazioni (step extracted + confirmed)
-[[kv_namespaces]]
-binding = "HISTORY"
-id      = "SOSTITUIRE_CON_ID_REALE"
-
-# ── Secret (non va nel toml) ──────────────────────────────────────────────────────────────────
+# ── Secret (non va nel toml) ──────────────────────────────────────────────────
 # wrangler secret put OPENROUTER_API_KEY
