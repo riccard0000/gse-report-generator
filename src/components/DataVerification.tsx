@@ -6,7 +6,6 @@ import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-// CSS per il text layer di pdfjs — necessario per il posizionamento corretto
 const TEXT_LAYER_CSS = `
 .pdfTextLayer {
   position: absolute;
@@ -86,11 +85,41 @@ function cleanRawText(raw: string, maxLen = 60): string {
   return s;
 }
 
+/**
+ * Estrae il valore numerico da un segmento rawText.
+ *
+ * Il modello AI serializza la riga della tabella come stringa piatta, quindi
+ * i numeri di colonne adiacenti finiscono nello stesso segmento separati da
+ * spazi (es. "INAIL 1 59" → la colonna corrente è 167, la precedente è 159).
+ *
+ * Strategia:
+ *   1. Raccoglie tutti i "token numerici" del segmento (sequenze di cifre,
+ *      eventualmente con separatori . , -).
+ *   2. Ricostruisce ogni numero comprimendo gli spazi interni tra cifre
+ *      (es. "1 59" → "159") per gestire casi in cui lo spazio non è un
+ *      separatore di colonna ma un artefatto di tokenizzazione.
+ *   3. Ritorna l'ULTIMO numero trovato: nella struttura tipica del bilancio
+ *      "Descrizione valore_corrente valore_precedente" il modello estrae il
+ *      valore precedente (usato per l'anno di riferimento), che si trova in
+ *      coda alla stringa.
+ */
 function extractSegmentValue(seg: string): number | null {
-  const match = seg.match(/-?[\d]+(?:[.,][\d]+)*/);
-  if (!match) return null;
-  const parsed = parseIT(match[0]);
-  return isNaN(parsed) ? null : parsed;
+  // Estrai tutti i token che contengono solo cifre, separatori numerici e spazi
+  // Unisci token adiacenti che sembrano parti dello stesso numero (es. "1" "59" → "159")
+  const digitGroups = seg.match(/-?[\d][\d\s.,]*[\d]|-?\d/g);
+  if (!digitGroups || digitGroups.length === 0) return null;
+
+  // Per ogni gruppo: rimuovi spazi interni tra cifre (ricostruzione numero spezzato)
+  const numbers: number[] = [];
+  for (const g of digitGroups) {
+    // "1 59" → "159", "1.234" → 1234 (separatore migliaia), "1,5" → 1.5
+    const compacted = g.replace(/(?<=\d) (?=\d)/g, '');
+    const parsed    = parseIT(compacted);
+    if (!isNaN(parsed) && parsed !== 0) numbers.push(parsed);
+  }
+  if (numbers.length === 0) return null;
+  // Ultimo numero = valore di colonna più a destra (esercizio precedente nel bilancio)
+  return numbers[numbers.length - 1];
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +141,25 @@ function segmentDisplayName(seg: string): string {
   return seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
+/**
+ * Normalizza una stringa numerica per il confronto esatto:
+ * rimuove separatori (. , spazi) e segno trailing, restituisce solo le cifre.
+ * Es: "1.234" → "1234", "1 59" → "159", "159-" → "159"
+ */
+function normalizeNumStr(s: string): string {
+  return s.replace(/[.,\s-]/g, '');
+}
+
+/**
+ * Cerca il token numerico sulla stessa riga dell'etichetta che corrisponde
+ * ESATTAMENTE al valore atteso (fieldValue).
+ *
+ * Ordine di priorità:
+ *   1. Corrispondenza esatta su TUTTI i token numerici della riga
+ *      (confronto cifre normalizzate, indipendente dalla posizione X)
+ *   2. Se non trovata: token con distanza numerica minima
+ *   3. Se fieldValue è null: primo token numerico a sinistra
+ */
 function findNumericNeighborForItem(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
@@ -128,24 +176,35 @@ function findNumericNeighborForItem(
   });
   if (sameRow.length === 0) return { numBbox: null, numericDistance: Infinity };
 
-  const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
+  const numericTokens = sameRow.filter(it => /^-?[\d.,\s]+[-]?$/.test(it.str.trim()));
   const pool          = numericTokens.length > 0 ? numericTokens : sameRow;
 
   if (fieldValue !== null && fieldValue !== undefined) {
-    const absVal = Math.abs(fieldValue);
-    const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
-    const exact  = pool.find(it => {
-      const s = it.str.replace(/[.,\s-]/g, '');
-      return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
+    const absVal      = Math.abs(fieldValue);
+    // Rappresentazioni canoniche del valore (solo cifre)
+    const targetDigits = normalizeNumStr(String(Math.round(absVal)));
+
+    // --- PASSO 1: corrispondenza esatta su TUTTI i token numerici ---
+    // Cerca in tutti i token, non solo il primo a sinistra
+    const exactMatch = pool.find(it => {
+      const normalized = normalizeNumStr(it.str);
+      return normalized === targetDigits;
     });
-    if (exact) {
-      const tf = exact.transform;
-      return { numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + exact.width, y1: tf[5] + exact.height }, numericDistance: 0 };
+    if (exactMatch) {
+      const tf = exactMatch.transform;
+      return {
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + exactMatch.width, y1: tf[5] + exactMatch.height },
+        numericDistance: 0,
+      };
     }
+
+    // --- PASSO 2: distanza numerica minima (fallback) ---
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of numericTokens) {
-      const parsed = parseIT(it.str);
+      // Prova anche a ricostruire numeri spezzati da spazi nel token
+      const compacted = it.str.replace(/(?<=\d) (?=\d)/g, '');
+      const parsed    = parseIT(compacted);
       if (!isNaN(parsed)) {
         const dist = Math.abs(parsed - absVal);
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
@@ -153,12 +212,20 @@ function findNumericNeighborForItem(
     }
     if (bestItem) {
       const tf = bestItem.transform;
-      return { numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height }, numericDistance: bestDist };
+      return {
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height },
+        numericDistance: bestDist,
+      };
     }
   }
+
+  // --- PASSO 3: primo token numerico a sinistra (nessun fieldValue) ---
   const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
-  return { numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height }, numericDistance: Infinity };
+  return {
+    numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height },
+    numericDistance: Infinity,
+  };
 }
 
 interface PdfTextItem {
@@ -347,25 +414,22 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages,  setTotalPages]  = useState(1);
 
-  const containerRef   = useRef<HTMLDivElement>(null);
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const textLayerRef   = useRef<HTMLDivElement>(null);
-  const hlLayerRef     = useRef<HTMLDivElement>(null);
-
-  const pdfDocRef      = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-  const currentPageRef = useRef(1);
-  const highlightRef   = useRef<ActiveHighlight | null>(null);
-  const renderSeqRef   = useRef(0);
-  const renderTaskRef  = useRef<pdfjsLib.RenderTask | null>(null);
+  const containerRef     = useRef<HTMLDivElement>(null);
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const textLayerRef     = useRef<HTMLDivElement>(null);
+  const hlLayerRef       = useRef<HTMLDivElement>(null);
+  const pdfDocRef        = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  const currentPageRef   = useRef(1);
+  const highlightRef     = useRef<ActiveHighlight | null>(null);
+  const renderSeqRef     = useRef(0);
+  const renderTaskRef    = useRef<pdfjsLib.RenderTask | null>(null);
   const textLayerTaskRef = useRef<TextLayer | null>(null);
-  const renderingRef   = useRef(false);
-  // dimensioni logiche CSS dell'ultima pagina renderizzata
-  const pageCssSize    = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  const renderingRef     = useRef(false);
+  const pageCssSize      = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
 
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
 
-  // Ridisegna solo gli highlight (DOM div) senza ri-renderizzare il canvas
   const drawHighlights = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport) => {
     const hlDiv = hlLayerRef.current;
     if (!hlDiv) return;
@@ -390,14 +454,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
       const div = document.createElement('div');
       div.style.cssText = [
-        `position:absolute`,
+        'position:absolute',
         `left:${x}px`, `top:${y}px`,
         `width:${w}px`, `height:${h}px`,
         `background:${colors.bg}`,
         `border:2px solid ${colors.border}`,
-        `border-radius:2px`,
-        `pointer-events:none`,
-        `z-index:10`,
+        'border-radius:2px',
+        'pointer-events:none',
+        'z-index:10',
       ].join(';');
       hlDiv.appendChild(div);
     });
@@ -412,7 +476,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (!pdf || !canvas || !tlDiv) return;
     if (seq !== renderSeqRef.current) return;
 
-    // Cancella render precedente
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch { /**/ }
       renderTaskRef.current = null;
@@ -432,17 +495,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       const BASE_SCALE = 1.5;
       const viewport   = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
 
-      // Canvas fisico
       canvas.width  = viewport.width;
       canvas.height = viewport.height;
-      // CSS logico
       const cssW = viewport.width  / dpr;
       const cssH = viewport.height / dpr;
       canvas.style.width  = `${cssW}px`;
       canvas.style.height = `${cssH}px`;
       pageCssSize.current = { w: cssW, h: cssH };
 
-      // Text layer e highlight layer stessa dimensione CSS
       tlDiv.style.width  = `${cssW}px`;
       tlDiv.style.height = `${cssH}px`;
       tlDiv.innerHTML    = '';
@@ -452,7 +512,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         hlLayerRef.current.innerHTML    = '';
       }
 
-      // 1. Render canvas
       const ctx  = canvas.getContext('2d')!;
       const task = pdfPage.render({ canvasContext: ctx, viewport });
       renderTaskRef.current = task;
@@ -460,8 +519,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       renderTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
 
-      // 2. Text layer — usa un viewport scalato a BASE_SCALE (non *dpr)
-      //    così le coordinate CSS degli span corrispondono ai pixel logici
       const textViewport = pdfPage.getViewport({ scale: BASE_SCALE });
       const textContent  = await pdfPage.getTextContent();
       if (seq !== renderSeqRef.current) return;
@@ -476,7 +533,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       textLayerTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
 
-      // 3. Highlight layer
       if (hl && hl.page === page) drawHighlights(hl, viewport);
 
     } catch (e: unknown) {
@@ -499,7 +555,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [requestRender]);
 
-  // Carica PDF
   useEffect(() => {
     pdfDocRef.current = null;
     renderSeqRef.current++;
@@ -518,7 +573,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelled = true; };
   }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cambia pagina se arriva highlight su pagina diversa, ridisegna highlight
   useEffect(() => {
     highlightRef.current = highlight;
     if (highlight?.page && highlight.page !== currentPageRef.current) {
@@ -526,13 +580,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       setCurrentPage(highlight.page);
       if (pdfDocRef.current) requestRender();
     } else if (pdfDocRef.current) {
-      // Stessa pagina: aggiorna solo highlight layer senza re-render canvas
-      // Per farlo dobbiamo avere il viewport — ri-richiediamo il render leggero
       requestRender();
     }
   }, [highlight]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Inietta CSS text layer una sola volta
   useEffect(() => {
     if (document.getElementById('pdfjs-text-layer-css')) return;
     const style = document.createElement('style');
@@ -558,7 +609,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   return (
     <>
-      {/* Toolbar navigazione */}
       <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
         <span className="text-xs font-medium text-slate-600 truncate max-w-xs">{file.name}</span>
         <div className="flex items-center gap-2">
@@ -572,20 +622,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         </div>
       </div>
 
-      {/* Area PDF scrollabile */}
       <div className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100">
-        {/* Wrapper relativo: canvas + text layer + highlight layer sovrapposti */}
         <div ref={containerRef} className="relative shadow-2xl inline-block">
           <canvas ref={canvasRef} className="block" />
-
-          {/* Text layer: testo selezionabile trasparente sopra il canvas */}
           <div
             ref={textLayerRef}
             className="pdfTextLayer"
             style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto' }}
           />
-
-          {/* Highlight layer: rettangoli colorati sopra il text layer */}
           <div
             ref={hlLayerRef}
             style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
@@ -593,7 +637,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         </div>
       </div>
 
-      {/* Legenda highlight */}
       {legendItems.length > 0 && (
         <div className="px-4 py-2 bg-white border-t border-slate-200 flex items-center gap-3 flex-wrap flex-shrink-0">
           {legendItems.map((item, i) => (
