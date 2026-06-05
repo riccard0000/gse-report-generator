@@ -157,9 +157,11 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   return merged;
 }
 
+// FIX 1: Y_ROW_TOL alzato da 3 a 6 per catturare token sulla stessa riga
+// anche quando il font mixing causa variazioni Y di 4-5px
 function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
-  const Y_ROW_TOL = 3;
+  const Y_ROW_TOL = 6; // era 3
   const sorted = [...items].sort((a, b) => {
     const dy = b.transform[5] - a.transform[5];
     if (Math.abs(dy) > Y_ROW_TOL) return dy;
@@ -194,6 +196,7 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
 
 // ---------------------------------------------------------------------------
 // Trova il token numerico sulla stessa riga di un item etichetta
+// FIX 3: Y_TOL alzato da 5 a 8
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -202,7 +205,7 @@ function findNumericNeighbor(
 ): { numBbox: BBox | null; numericDistance: number } {
   const labelY  = labelItem.transform[5];
   const labelX1 = labelItem.transform[4] + labelItem.width;
-  const Y_TOL   = 5;
+  const Y_TOL   = 8; // era 5
   const mergedItems = buildMergedTokens(items);
   const sameRow = mergedItems.filter(it => {
     const tf = it.transform;
@@ -251,7 +254,14 @@ function findNumericNeighbor(
 
 // ---------------------------------------------------------------------------
 // Cerca UNA singola stringa di ricerca nel PDF.
-// Restituisce il miglior item trovato + la sua bbox.
+//
+// Livelli di matching in ordine decrescente di precisione:
+//   1. Exact match su token singolo
+//   2. Exact match su riga completa (rowToken)
+//   3. La riga inizia con la needle
+//   4. La riga contiene la needle come substring (FIX 2a — nuovo)
+//   5. La needle contiene la riga (label spezzata — FIX 2b — nuovo)
+//   6. Keyword fuzzy: almeno ceil(70%) delle keyword nella riga (FIX soglia)
 // ---------------------------------------------------------------------------
 function matchLabelInPage(
   items: PdfTextItem[],
@@ -270,32 +280,45 @@ function matchLabelInPage(
   const exactRow = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === needle
   );
-  // 3. La riga inizia con la stringa cercata (es. "Totale attivo circolante (C) 449.155")
+  // 3. La riga inizia con la needle (es. "Totale attivo 449.155")
   const startRow = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trimStart().startsWith(needle)
   );
-  // 4. Keyword fallback: TUTTE le keyword devono essere presenti (soglia alta)
+  // 4. La riga contiene la needle come substring (FIX 2a)
+  //    Cattura: "A) Valore della produzione" → needle "Totale valore della produzione"? No.
+  //    Cattura: riga="Totale valore della produzione 818.547" → needle="Totale valore della produzione" ✓
+  const containsRow = rowTokens.filter(rt => {
+    const rowStr = rt.str.toLowerCase().replace(/\s+/g, ' ');
+    return rowStr.includes(needle);
+  });
+  // 5. La needle contiene la riga come substring (FIX 2b)
+  //    Cattura label lunga spezzata: riga="Differenza tra valore e costi" ⊂ needle completa
+  const needleContainsRow = rowTokens.filter(rt => {
+    const rowStr = rt.str.toLowerCase().replace(/\s+/g, ' ').trim();
+    return rowStr.length >= 8 && needle.includes(rowStr);
+  });
+  // 6. Keyword fuzzy — soglia al 70% (FIX soglia, era 100%)
   const keywords = needle
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3);
   const kwMatches: PdfTextItem[] = [];
   if (keywords.length > 0) {
-    const strictThreshold = keywords.length; // tutte le keyword (non ceil/2)
+    const threshold70 = Math.max(1, Math.ceil(keywords.length * 0.7)); // FIX: era keywords.length
     for (const pool of [rowTokens, items]) {
       for (const it of pool) {
         const txt   = it.str.toLowerCase();
         const count = keywords.filter(w => txt.includes(w)).length;
-        if (count >= strictThreshold) kwMatches.push(it);
+        if (count >= threshold70) kwMatches.push(it);
       }
       if (kwMatches.length > 0) break;
     }
   }
 
-  // Unione candidati con priorità: exact > startRow > kwMatches
+  // Unione candidati con priorità: exact > startRow > containsRow > needleContainsRow > kwMatches
   const candidates: PdfTextItem[] = [];
   const seen = new Set<number>();
-  for (const it of [...exactSingle, ...exactRow, ...startRow, ...kwMatches]) {
+  for (const it of [...exactSingle, ...exactRow, ...startRow, ...containsRow, ...needleContainsRow, ...kwMatches]) {
     const key = it.transform[4] * 10000 + it.transform[5];
     if (!seen.has(key)) { seen.add(key); candidates.push(it); }
   }
@@ -304,17 +327,14 @@ function matchLabelInPage(
   // Scegli il candidato con il token numerico più vicino al valore atteso
   let bestCandidate: PdfTextItem | null = null;
   let bestDist = Infinity;
-  let bestNumBbox: BBox | null = null;
 
   for (const c of candidates) {
-    const { numBbox, numericDistance } = findNumericNeighbor(items, c, fieldValue);
+    const { numericDistance } = findNumericNeighbor(items, c, fieldValue);
     if (numericDistance < bestDist) {
       bestDist      = numericDistance;
       bestCandidate = c;
-      bestNumBbox   = numBbox;
     }
   }
-  // Se nessun candidato ha un valore numerico associato, prendi il primo
   if (!bestCandidate) bestCandidate = candidates[0];
 
   const tf = bestCandidate.transform;
@@ -322,8 +342,6 @@ function matchLabelInPage(
     labelBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestCandidate.width, y1: tf[5] + bestCandidate.height },
     item: bestCandidate,
     numericDistance: bestDist,
-    // numBbox è usato fuori — lo ricalcoliamo dopo con il winner
-    ...(bestNumBbox ? {} : {}),
   };
 }
 
@@ -333,7 +351,7 @@ function matchLabelInPage(
 // Per ogni stringa: cerca nel PDF e verifica che ci sia un valore numerico
 // compatibile sulla stessa riga.
 // Si ferma alla prima stringa che soddisfa entrambe le condizioni.
-// Fallback finale: rawLabel dell'AI.
+// Fallback finale: rawLabel dell'AI — accettato anche senza numero se è l'ultimo tentativo.
 // ---------------------------------------------------------------------------
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -348,31 +366,43 @@ async function findBboxForField(
     const rows    = buildRowTokens(items);
     const fv      = typeof field.value === 'number' ? field.value : null;
 
-    // Lista di stringhe candidate: schema XBRL + rawLabel AI come fallback
+    // Lista ordinata: schema XBRL → rawLabel AI come ultimo fallback
     const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
     const aiLabel      = (field.rawLabel ?? '').trim();
     const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
       ? [...schemaLabels, aiLabel]
       : schemaLabels;
 
-    for (const searchStr of allLabels) {
+    let lastTextOnlyMatch: { labelBbox: BBox; item: PdfTextItem } | null = null;
+
+    for (let li = 0; li < allLabels.length; li++) {
+      const searchStr = allLabels[li];
       if (!searchStr) continue;
+
       const match = matchLabelInPage(items, rows, searchStr, fv);
       if (!match) continue;
 
       // Ricalcola il numBbox con il winner definitivo
       const { numBbox } = findNumericNeighbor(items, match.item, fv);
 
-      // Accettiamo questo risultato se:
-      //   a) ha trovato un valore numerico sulla stessa riga (distanza finita), oppure
-      //   b) non abbiamo un valore atteso (fv == null) — ci basta il testo
-      if (numBbox !== null || fv === null) {
-        return {
-          bboxes: numBbox ? [match.labelBbox, numBbox] : [match.labelBbox],
-        };
+      if (numBbox !== null) {
+        // Match completo: etichetta + numero
+        return { bboxes: [match.labelBbox, numBbox] };
       }
-      // Altrimenti: trovato il testo ma nessun numero compatibile — proviamo la label successiva
+
+      // Testo trovato ma senza numero compatibile:
+      // salva come fallback e continua a provare le label successive
+      if (!lastTextOnlyMatch) {
+        lastTextOnlyMatch = { labelBbox: match.labelBbox, item: match.item };
+      }
     }
+
+    // Nessuna label ha trovato il numero: usa il miglior testo trovato
+    // (fv===null significa che non abbiamo un valore atteso → il solo testo basta)
+    if (lastTextOnlyMatch) {
+      return { bboxes: [lastTextOnlyMatch.labelBbox] };
+    }
+
     return null;
   } catch {
     return null;
@@ -764,7 +794,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
-  // handleFieldFocus: usa schema-first via findBboxForField
   const handleFieldFocus = useCallback(async (
     fieldKey: BalanceFieldKey,
     field: ExtractedField<unknown> | null,
@@ -773,7 +802,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     const color = HIGHLIGHT_COLORS[fileIdx] ?? HIGHLIGHT_COLORS[0];
     if (!field?.page) { setActiveHighlight(null); return; }
 
-    // Placeholder immediato per il cambio pagina
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
     try {
@@ -906,7 +934,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   const isUnavail = field?.value === null && !!field?.rawText;
                   const hasPage   = !!field?.page;
                   const caption   = field ? captionText(field) : '';
-                  // Mostra la label primaria dello schema come tooltip informativo
                   const schemaHint = BALANCE_SCHEMA[key]?.primary ?? '';
                   return (
                     <div key={key as string}>
