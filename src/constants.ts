@@ -23,7 +23,7 @@ Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick.
 Mappe voci di bilancio (schema italiano CE/SP):
 - "ricavi" = Totale Valore della produzione (voce A del CE)
 - "ebit" = Differenza tra valore e costi della produzione (A - B)
-- "ebitda" = ebit + ammortamenti + svalutazioni + accantonamenti (dalla nota integrativa)
+- "ammortamenti" = Totale ammortamenti e svalutazioni (voce 10 del CE)
 - "utileNetto" = voce 21 del CE
 - "interessiPassivi" = Totale interessi e altri oneri finanziari (C17)
 - "totaleAttivo" = Totale attivo SP
@@ -39,6 +39,9 @@ Mappe voci di bilancio (schema italiano CE/SP):
 - "debitiTributari" = debiti tributari verso l'Erario (vedi regola MULTI-RIGA sotto)
 - "debitiPrevidenziali" = debiti previdenziali verso INPS/INAIL (vedi regola MULTI-RIGA sotto)
 - "fondoRischiOneri" = B) Fondi per rischi e oneri SP
+
+NOTA: ebitda NON deve essere estratto — viene calcolato automaticamente dal sistema come ebit + ammortamenti.
+      Non includere ebitda nell'output JSON.
 
 REGOLA PRIORITÀ SP → NOTA per debitiTributari e debitiPrevidenziali:
   1. PRIMA cerca nello Stato Patrimoniale (SP) una riga aggregata con etichette come:
@@ -97,16 +100,18 @@ Per ciascun valore numerico includi SEMPRE questi 4 campi:
   una copia imprecisa impedisce l'evidenziazione automatica nel viewer.
   Esempi CORRETTI:
     riga "Totale valore della produzione   818.547   778.956" → rawLabel = "Totale valore della produzione"
-    riga "B) Fondi per rischi e oneri   12.000   9.500"      → rawLabel = "Fondi per rischi e oneri"
+    riga "Fondi per rischi e oneri   12.000   9.500"         → rawLabel = "Fondi per rischi e oneri"
     riga "IV - Disponibilità liquide    5.320"               → rawLabel = "Disponibilità liquide"
-    riga "C17) Interessi e oneri fin.   (3.200)"            → rawLabel = "Interessi e oneri finanziari"
+    riga "C17) Interessi e oneri fin.   (3.200)"             → rawLabel = "Interessi e oneri finanziari"
+    riga "esigibili entro l'esercizio successivo  629.885"  → rawLabel = "esigibili entro l'esercizio successivo"
   Esempi ERRATI (non fare mai):
     rawLabel = "Totale Valore Della Produzione"  ← maiuscole alterate
     rawLabel = "Disponibilita liquide"           ← accento rimosso
     rawLabel = "818.547"                         ← solo numeri
     rawLabel = "A - B"                           ← trattino numerico
-  Per formule/calcoli (es. EBITDA stimato), rawLabel = nome della voce principale
-  (es. "Differenza tra valore e costi della produzione").
+    rawLabel = "Totale debiti esigibili entro..." ← testo non presente come riga nel PDF
+  REGOLA FONDAMENTALE: rawLabel deve corrispondere ESATTAMENTE a una stringa presente nel PDF
+  (o al prefisso di una stringa, per campi MULTI-RIGA). MAI testo inventato o ricostruito.
 
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
@@ -133,7 +138,7 @@ Struttura JSON richiesta (NON modificare i nomi delle chiavi):
       "year": "YYYY",
       "sourceFileName": "string",
       "ricavi":               { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
-      "ebitda":               { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "ammortamenti":         { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "ebit":                 { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "utileNetto":           { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "interessiPassivi":     { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },

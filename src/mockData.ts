@@ -33,6 +33,12 @@
  * Pagine fisiche:
  *   Copertina → 1 | SP → 3 | CE → 4
  *   Note debiti → 2022: p.11 | 2023: p.12 | 2024: p.13
+ *
+ * rawLabel per passivitaCorrenti e creditiEntro12Mesi:
+ *   Nel PDF GEOSOL le righe di dettaglio SP compaiono troncate senza il prefisso
+ *   "Totale debiti" / "Crediti" — il viewer usa rawLabel per cercare nel testo
+ *   estratto, quindi rawLabel DEVE coincidere con ciò che appare nel PDF:
+ *   "esigibili entro l'esercizio successivo" (senza alcun prefisso).
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
@@ -100,7 +106,8 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  "Differenza tra valore e costi della produzione (A - B)\t160.638\t215.726",
       },
       ammortamenti: {
-        value: 145787,
+        // FIX: value allineato al rawText (145.786, non 145.787)
+        value: 145786,
         page: 4,
         rawLabel: "Totale ammortamenti e svalutazioni",
         rawText:  "Totale ammortamenti e svalutazioni\t145.786\t130.769",
@@ -143,10 +150,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t449.155\t389.360",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF (troncata senza prefisso)
       passivitaCorrenti: {
         value: 864978,
         page: 3,
-        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t864.978\t347.257",
       },
       disponibilitaLiquide: {
@@ -155,10 +163,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "IV - Disponibilità liquide",
         rawText:  "IV - Disponibilità liquide\t254.282\t259.343",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF (troncata senza prefisso)
       creditiEntro12Mesi: {
         value: 194873,
         page: 3,
-        rawLabel: "Crediti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t194.873\t130.027",
       },
       rimanenze: {
@@ -170,7 +179,7 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       fondoRischiOneri: {
         value: 47757,
         page: 3,
-        rawLabel: "B) Fondi per rischi e oneri",
+        rawLabel: "Fondi per rischi e oneri",
         rawText:  "B) Fondi per rischi e oneri\t47.757",
       },
 
@@ -187,18 +196,12 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
-      // MULTI-RIGA: tutte le voci Erario della nota integrativa p.11
-      // Valore = somma consist.finale colonna 2022 (980+159 → vedi INPS sotto)
-      // Erario: c/IRES=0, c/acconti IRES=31.561, c/acconti IRAP=10.715, c/IRAP=0
-      // + voci troncate (c/riten, c/rit.aut, c/imposte TFR, imposta TFR)
-      // Totale confermato = 56.797 dal mock originale
       debitiTributari: {
         value: 56797,
         page: 11,
         rawLabel: "Erario",
         rawText:  "Erario c/riten.su redd.lav.dipend.e assi\nErario c/rit.redd.lav.aut.,agenti,rappr.\nErario c/imposte sostitutive su TFR\nErario imposta sostitutiva su TFR\nErario c/IRES\t7.747\t-\t7.747-\t100-\nErario c/acconti IRES\t33.323\t31.561\t1.762-\t6-\nErario c/acconti IRAP\t-\t10.715\t10.715\t100\nErario c/IRAP\t5.737\t-\t5.737-\t-",
       },
-      // MULTI-RIGA: INPS + INAIL — consist.finale 2022
       debitiPrevidenziali: {
         value: 1139,
         page: 11,
@@ -269,10 +272,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t187.761\t449.155",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF
       passivitaCorrenti: {
         value: 733962,
         page: 3,
-        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t733.962\t864.978",
       },
       disponibilitaLiquide: {
@@ -281,10 +285,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "IV - Disponibilità liquide",
         rawText:  "IV - Disponibilità liquide\t53.216\t254.282",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF
       creditiEntro12Mesi: {
         value: 134545,
         page: 3,
-        rawLabel: "Crediti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t134.545\t194.873",
       },
       rimanenze: {
@@ -296,7 +301,7 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       fondoRischiOneri: {
         value: 47757,
         page: 3,
-        rawLabel: "B) Fondi per rischi e oneri",
+        rawLabel: "Fondi per rischi e oneri",
         rawText:  "B) Fondi per rischi e oneri\t47.757\t47.757",
       },
 
@@ -312,17 +317,12 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
-      // MULTI-RIGA: voci Erario nota p.12 — consist.finale 2023
-      // c/imposte TFR=0, imposta TFR=491, c/acconti IRES=0, c/acconti IRAP=0, c/IRES=19.900
-      // + voci troncate (c/riten, c/rit.aut)
-      // Totale = 24.568 (confermato)
       debitiTributari: {
         value: 24568,
         page: 12,
         rawLabel: "Erario",
         rawText:  "Erario c/riten.su redd.lav.dipend.e\nErario c/rit.redd.lav.aut.,agenti,\nErario c/imposte sostitutive su TFR\t131\t-\t-131\t-100,00%\nErario imposta sostitutiva su TFR\t491\t491\t-\t-\nErario c/acconti IRES\t31.561\t-\t-31.561\t-100,00%\nErario c/acconti IRAP\t10.715\t-10.715\t-100,00%\nErario c/IRES\t-\t19.900\t19.900\t100,00%",
       },
-      // MULTI-RIGA: INPS + INAIL — consist.finale 2023
       debitiPrevidenziali: {
         value: 1965,
         page: 12,
@@ -393,10 +393,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t517.437\t187.761",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF
       passivitaCorrenti: {
         value: 629885,
         page: 3,
-        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t629.885\t733.962",
       },
       disponibilitaLiquide: {
@@ -405,10 +406,11 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "IV - Disponibilità liquide",
         rawText:  "IV - Disponibilità liquide\t224.292\t53.216",
       },
+      // FIX: rawLabel allineato al testo verbatim della riga nel PDF
       creditiEntro12Mesi: {
         value: 293145,
         page: 3,
-        rawLabel: "Crediti esigibili entro l'esercizio successivo",
+        rawLabel: "esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t293.145\t134.545",
       },
       rimanenze: {
@@ -420,7 +422,7 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       fondoRischiOneri: {
         value: 0,
         page: 3,
-        rawLabel: "B) Fondi per rischi e oneri",
+        rawLabel: "Fondi per rischi e oneri",
         rawText:  "B) Fondi per rischi e oneri\t-\t47.757",
       },
 
@@ -436,16 +438,12 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
-      // MULTI-RIGA: voci Erario nota p.13 — consist.finale 2024
-      // c/riten=1.096, c/rit.aut=3.433, imposta TFR=508, c/IRES=7.574
-      // Totale = 12.611
       debitiTributari: {
         value: 12611,
         page: 13,
         rawLabel: "Erario",
         rawText:  "Erario c/riten.su redd.lav.dipend.e assi\t1.265\t1.096\t-169\t-15,42%\nErario c/rit.redd.lav.aut.,agenti,rappr.\t2.912\t3.433\t521\t15,18%\nErario imposta sostitutiva su TFR\t491\t508\t17\t3,46%\nErario c/IRES\t19.900\t7.574\t-12.326\t-61,94%",
       },
-      // MULTI-RIGA: INPS + INAIL — consist.finale 2024
       debitiPrevidenziali: {
         value: 2287,
         page: 13,
