@@ -56,34 +56,41 @@ REGOLA MULTI-RIGA (nota integrativa — solo se non trovato in SP):
   Questa regola si applica a debitiTributari e debitiPrevidenziali quando il dettaglio
   è esposto solo nella nota integrativa come tabella con più voci (es. sezione "Debiti").
 
+  STRUTTURA COLONNE della tabella debiti in nota integrativa:
+  La tabella ha SEMPRE questo formato a 4-5 colonne:
+  [Descrizione] | [Consist.INIZIALE anno precedente] | [Consist.FINALE anno corrente] | [Variaz.assoluta] | [Variaz.%]
+
+  Esempio riga: "Erario c/IRES\t\t7.574\t\t19.900\t\t12.326\t\t162,78%"
+  In questo esempio: Consist.iniziale = 7.574 (anno precedente), Consist.finale = 19.900 (ANNO CORRENTE).
+  Devi prendere 19.900, NON 7.574.
+
+  REGOLA CRITICA — quale colonna sommare:
+  Devi sommare SEMPRE e SOLO la colonna CONSIST.FINALE (= seconda colonna numerica = anno corrente).
+  La colonna CONSIST.INIZIALE (= prima colonna numerica) contiene i valori dell'anno precedente: NON usarla.
+  Un trattino "-" in qualsiasi colonna significa zero: trattalo come 0.
+  Se una riga ha solo un numero (Consist.iniziale = Consist.finale = stesso valore), usa quel valore.
+
   Per "debitiTributari":
   - Individua TUTTE le righe che iniziano con "Erario" nella sezione debiti della nota.
-  - Somma i valori della colonna CONSISTENZA FINALE (anno corrente) di tutte le righe.
-    Ignora i trattini ("-") come zero. Ignora righe che non hanno numeri (troncate).
+  - Somma i valori della colonna CONSIST.FINALE (anno corrente) di tutte le righe.
   - "value" = somma totale calcolata
   - "page" = pagina della nota integrativa dove si trovano le righe
-  - "rawLabel" = "Erario" (prefisso comune — il viewer evidenzierà TUTTE le occorrenze)
-  - "rawText" = concatenazione di TUTTE le righe Erario trovate, separate da \n,
-    ognuna nel formato verbatim con tab: es.
-    "Erario c/riten.su redd.lav.dipend.e assi\t1.265\t1.096\t-169\t-15,42%\nErario c/IRES\t19.900\t7.574\t-12.326\t-61,94%"
-    Per righe il cui nome è troncato su riga successiva (senza numeri), includile ugualmente.
+  - "rawLabel" = "Erario"
+  - "rawText" = concatenazione di TUTTE le righe Erario trovate, separate da \n, verbatim con tab.
 
   Per "debitiPrevidenziali":
   - Individua TUTTE le righe che iniziano con "INPS" o "INAIL" nella sezione debiti.
-  - Stessa logica di somma e formato rawText.
-  - "rawLabel" = "INPS" (prefisso comune)
-
-  REGOLA CRITICA per la colonna da sommare:
-  La tabella nota debiti ha tipicamente 4 colonne:
-  [Descrizione] [Consist.iniziale] [Consist.finale] [Variaz.assoluta] [Variaz.%]
-  Devi sommare SEMPRE la colonna CONSIST.FINALE (seconda colonna numerica = anno corrente).
-  NON sommare la colonna Consist.iniziale (anno precedente).
+  - Stessa logica: somma CONSIST.FINALE (anno corrente), ignora CONSIST.INIZIALE.
+  - "rawLabel" = "INPS"
 
 Per ciascun valore numerico includi SEMPRE questi 4 campi:
 - "value": numero intero corrispondente all'anno di riferimento di QUESTO documento.
   REGOLA CRITICA: nei prospetti a doppia colonna (anno corrente | anno precedente),
   estrai SEMPRE il valore della colonna di SINISTRA (anno corrente del documento).
-  Usa 0 se la voce è esplicitamente zero nel documento, null se la voce è assente.
+  Distinzione fondamentale:
+    • "value": null  → voce NON PRESENTE nel documento (non si riesce a trovare la voce)
+    • "value": 0     → voce PRESENTE nel documento e il suo importo è esplicitamente zero o trattino
+  Non usare 0 per indicare assenza: se la voce non è trovata, usa null.
 - "page": numero di pagina del PDF (OBBLIGATORIO — non lasciare null se il valore è stato trovato).
 - "rawText": copia LETTERALE della riga completa del documento, esattamente come appare
   nel testo fornito, inclusi separatori \t e TUTTI i numeri sulla riga
@@ -96,8 +103,6 @@ Per ciascun valore numerico includi SEMPRE questi 4 campi:
   (à, è, é, ì, ò, ù), apostrofi e parentesi alfabetiche.
   REGOLA: nessuna cifra, nessun separatore numerico (. , -), nessun tab.
   Per campi MULTI-RIGA: usa il prefisso comune ("Erario", "INPS").
-  Questo campo è usato dal sistema per localizzare la riga nel PDF visualizzato:
-  una copia imprecisa impedisce l'evidenziazione automatica nel viewer.
   Esempi CORRETTI:
     riga "Totale valore della produzione   818.547   778.956" → rawLabel = "Totale valore della produzione"
     riga "Fondi per rischi e oneri   12.000   9.500"         → rawLabel = "Fondi per rischi e oneri"
@@ -109,9 +114,13 @@ Per ciascun valore numerico includi SEMPRE questi 4 campi:
     rawLabel = "Disponibilita liquide"           ← accento rimosso
     rawLabel = "818.547"                         ← solo numeri
     rawLabel = "A - B"                           ← trattino numerico
-    rawLabel = "Totale debiti esigibili entro..." ← testo non presente come riga nel PDF
-  REGOLA FONDAMENTALE: rawLabel deve corrispondere ESATTAMENTE a una stringa presente nel PDF
-  (o al prefisso di una stringa, per campi MULTI-RIGA). MAI testo inventato o ricostruito.
+
+REGOLA SPECIALE gseResidual:
+  Il campo "gseResidual" riguarda ESCLUSIVAMENTE il documento GSE allegato (se presente).
+  - Se è presente un documento GSE con la frase "Importo residuo dovuto al GSE euro", usa il valore che la segue.
+  - Se il documento GSE NON è presente oppure la frase non è trovata:
+    → "value": null  (NON usare 0 — l'assenza del dato è diversa dal residuo zero)
+  - "value": 0 si usa SOLO se il documento GSE è presente e indica esplicitamente importo zero.
 
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
@@ -131,7 +140,7 @@ Struttura JSON richiesta (NON modificare i nomi delle chiavi):
 {
   "companyName": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
   "vatNumber": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
-  "gseResidual": { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+  "gseResidual": { "value": null, "page": null, "rawText": "string", "rawLabel": "Importo residuo dovuto al GSE euro" },
   "gseSourceFileName": "string",
   "yearsData": [
     {
@@ -145,11 +154,11 @@ Struttura JSON richiesta (NON modificare i nomi delle chiavi):
       "totaleAttivo":         { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "patrimonioNetto":      { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "totaleDebiti":         { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
-      "debitiBancheBreve":    { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
-      "debitiBancheML":       { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "debitiBancheBreve":    { "value": null, "page": null, "rawText": "string", "rawLabel": "string" },
+      "debitiBancheML":       { "value": null, "page": null, "rawText": "string", "rawLabel": "string" },
       "disponibilitaLiquide": { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "creditiEntro12Mesi":   { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
-      "rimanenze":            { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "rimanenze":            { "value": null, "page": null, "rawText": "string", "rawLabel": "string" },
       "attivoCircolante":     { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "passivitaCorrenti":    { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
       "debitiTributari":      { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
