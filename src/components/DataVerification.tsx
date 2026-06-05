@@ -80,23 +80,16 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
-/**
- * Restituisce la stringa da mostrare come caption sotto il campo.
- * Usa rawLabel (verbatim, senza numeri) come sorgente primaria;
- * se assente, ricade su rawText con normalizzazione.
- */
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
-  // rawLabel è string | null — sorgente primaria
   if (field.rawLabel) {
     const s = field.rawLabel.trim();
     return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
   }
-  // fallback: rawText con normalizzazione spazi e separazione testo/numeri
   const src = field.rawText?.trim();
   if (!src) return '';
   let s = src
     .replace(/[\t]/g, ' ')
-    .replace(/([A-Za-z\u00c0-\u00ff)])([\d])/g, '$1 $2')
+    .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
     .replace(/([\d])([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -104,22 +97,11 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   return s;
 }
 
-/**
- * Restituisce il testo da usare come chiave di ricerca nel PDF.
- * Usa rawLabel (verbatim) come primario; se null ricade su rawText
- * ripulito dai numeri.
- *
- * FIX #3: la regex di rimozione numeri ora copre anche numeri con spazi
- * interni (es. "145 786") e pulisce correttamente spazi multipli residui.
- */
 function lookupLabel(field: ExtractedField<unknown>): string {
-  // rawLabel è string | null dopo il refactoring — no optional chaining
   if (field.rawLabel) return field.rawLabel.trim();
-  // FIX #3: rimuove numeri con possibili spazi interni (es. "145 786")
-  // e normalizza gli spazi multipli risultanti
   return (field.rawText ?? '')
     .replace(/[\t]/g, ' ')
-    .replace(/-?[\d][\d.,\s]*/g, ' ')   // FIX #3: aggiunto \s per numeri "145 786"
+    .replace(/-?[\d][\d.,\s]*/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -145,9 +127,6 @@ interface PdfTextItem {
   height: number;
 }
 
-/**
- * Fonde token adiacenti sulla STESSA riga con gap molto stretto (≤2pt).
- */
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
   const sorted = [...items].sort((a, b) => {
@@ -186,11 +165,6 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   return merged;
 }
 
-/**
- * Costruisce token "riga intera" fondendo tutti i token sulla stessa riga Y.
- * Usato per cercare etichette multi-span (es. "Totale valore" + "della produzione"
- * sono due span PDF separati ma appartengono alla stessa riga logica).
- */
 function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
   const Y_ROW_TOL = 3;
@@ -269,8 +243,6 @@ function findNumericNeighborForItem(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    // FIX #4: soglia ridotta da max(10, 5%) a max(1, 2%) per evitare
-    // false corrispondenze su valori piccoli (interessi, INPS, ecc.)
     const threshold = Math.max(1, absVal * 0.02);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
@@ -290,16 +262,6 @@ function findNumericNeighborForItem(
   };
 }
 
-/**
- * Cerca l'etichetta sia tra i token singoli (span PDF) sia tra i token
- * di riga intera (per etichette spezzate in più span consecutivi).
- * Strategia:
- *  1. Match esatto sul singolo span
- *  2. Match esatto sulla riga intera (multi-span)
- *  3. Match per parole chiave (soglia ≥ metà delle keyword)
- *  4. Fallback: primo span che contiene la prima keyword
- * Restituisce l'item "radice" (primo span della riga) per il calcolo della bbox.
- */
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
   labelText: string,
@@ -308,39 +270,33 @@ async function findSingleBboxWithItem(
   const seg = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
-  // ── 1. Match esatto sul singolo span ─────────────────────────────────
   const exactSingle = items.filter(it =>
     it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
   );
 
-  // ── 2. Match esatto sulla riga intera (multi-span fusi) ──────────────
   const rowTokens = buildRowTokens(items);
   const exactRow  = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
   );
 
-  // ── 3. Match per parole chiave ────────────────────────────────────────
   const keywords = seg
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3)
     .slice(0, 5);
 
-  // Combina tutti i candidati in ordine di priorità
   let candidates: PdfTextItem[] = [
     ...exactSingle,
     ...exactRow,
   ];
 
   if (candidates.length === 0 && keywords.length > 0) {
-    // Cerca nei singoli span
     const threshold = Math.max(1, Math.ceil(keywords.length / 2));
     const kwSingle = items.filter(it => {
       const txt   = it.str.toLowerCase();
       const count = keywords.filter(w => txt.includes(w)).length;
       return count >= threshold;
     });
-    // Cerca nelle righe intere
     const kwRow = rowTokens.filter(rt => {
       const txt   = rt.str.toLowerCase();
       const count = keywords.filter(w => txt.includes(w)).length;
@@ -348,7 +304,6 @@ async function findSingleBboxWithItem(
     });
     candidates = [...kwSingle, ...kwRow];
 
-    // Fallback: primo span / riga che contiene la prima keyword
     if (candidates.length === 0 && keywords[0]) {
       const fbSingle = items.find(it => it.str.toLowerCase().includes(keywords[0]));
       const fbRow    = rowTokens.find(rt => rt.str.toLowerCase().includes(keywords[0]));
@@ -359,7 +314,6 @@ async function findSingleBboxWithItem(
 
   if (candidates.length === 0) return null;
 
-  // Scegli il candidato con valore numerico più vicino a fieldValue
   const pickBest = (pool: PdfTextItem[]): PdfTextItem => {
     if (pool.length === 1 || fieldValue == null) return pool[0];
     let bestDist = Infinity;
@@ -379,13 +333,6 @@ async function findSingleBboxWithItem(
   };
 }
 
-/**
- * FIX #2: PAGE_OFFSET compensa la differenza tra pagina logica (numerazione
- * stampata nel documento, usata nel mock data) e pagina fisica del PDF
- * (1-based, copertina = pagina fisica 1 non numerata).
- * Il bilancio ha sempre la copertina come pagina fisica 1, quindi
- * pagina logica N corrisponde a pagina fisica N+1.
- */
 const PAGE_OFFSET = 1;
 
 async function findBboxForField(
@@ -394,7 +341,6 @@ async function findBboxForField(
   field: ExtractedField<unknown>,
 ): Promise<MatchResult | null> {
   try {
-    // FIX #2: converti pagina logica → pagina fisica
     const physicalPage = pageNum + PAGE_OFFSET;
     const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
@@ -419,18 +365,12 @@ async function findBboxForField(
   }
 }
 
-/**
- * Cerca la bbox di un testo libero (fonteTestuale della checklist).
- * Cerca prima nei singoli span, poi nelle righe intere fuse.
- * FIX #2 applicato anche qui per la pagina della checklist.
- */
 async function findBboxForFreeText(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   text: string,
 ): Promise<BBox[]> {
   try {
-    // FIX #2: converti pagina logica → pagina fisica
     const physicalPage = pageNum + PAGE_OFFSET;
     const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
@@ -447,7 +387,6 @@ async function findBboxForFreeText(
 
     const threshold = Math.max(1, Math.ceil(words.length * 0.5));
 
-    // Cerca nei singoli span
     const matchedSingle: PdfTextItem[] = [];
     for (const item of items) {
       const txt   = item.str.toLowerCase();
@@ -455,7 +394,6 @@ async function findBboxForFreeText(
       if (count >= threshold) matchedSingle.push(item);
     }
 
-    // Cerca nelle righe intere fuse
     const rowTokens = buildRowTokens(items);
     const matchedRow: PdfTextItem[] = [];
     for (const rt of rowTokens) {
@@ -467,7 +405,6 @@ async function findBboxForFreeText(
     const matched = matchedSingle.length > 0 ? matchedSingle : matchedRow;
 
     if (matched.length === 0) {
-      // fallback: primo token che contiene la prima parola chiave
       const fb = items.find(it => it.str.toLowerCase().includes(words[0]))
                ?? rowTokens.find(rt => rt.str.toLowerCase().includes(words[0]));
       if (fb) return [{ x0: fb.transform[4], y0: fb.transform[5], x1: fb.transform[4] + fb.width, y1: fb.transform[5] + fb.height }];
@@ -559,12 +496,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const renderSeqRef     = useRef(0);
   const renderTaskRef    = useRef<pdfjsLib.RenderTask | null>(null);
   const textLayerTaskRef = useRef<TextLayer | null>(null);
-  const renderingRef     = useRef(false);
-  const pageCssSize      = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  // FIX: renderingRef rimosso — era la causa del blocco. Al suo posto usiamo
+  // renderSeqRef per la cancellazione e lasciamo che i render si accodino.
+  // cssViewportRef mantiene l'ultimo viewport CSS valido per drawHighlightsOnly.
+  const cssViewportRef   = useRef<pdfjsLib.PageViewport | null>(null);
 
   useEffect(() => { highlightRef.current = highlight; }, [highlight]);
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
 
+  // ---------------------------------------------------------------------------
+  // drawHighlights: disegna i box highlight sull'hlLayer usando il viewport CSS.
+  // Usato sia dentro doRender (al termine del render) sia da drawHighlightsOnly.
+  // ---------------------------------------------------------------------------
   const drawHighlights = useCallback((hl: ActiveHighlight | null, viewport: pdfjsLib.PageViewport) => {
     const hlDiv = hlLayerRef.current;
     if (!hlDiv) return;
@@ -577,9 +520,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         ? HIGHLIGHT_CHECKLIST_COLOR
         : idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
 
-      // FIX #5: il viewport è costruito con scale=BASE_SCALE (senza DPR),
-      // quindi convertToViewportPoint restituisce coordinate CSS dirette.
-      // NON dividere per dpr — era il bug principale che spostava i box.
+      // viewport è sempre cssViewport (BASE_SCALE senza DPR):
+      // convertToViewportPoint restituisce direttamente coordinate CSS.
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
       const x = Math.min(ax, bx);
@@ -602,6 +544,21 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     });
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // drawHighlightsOnly: disegna i box sull'hlLayer SENZA ri-renderizzare il canvas.
+  // Chiamato quando la pagina è già quella corretta e cambia solo l'highlight.
+  // FIX PRINCIPALE: questo path evita completamente il re-render del canvas
+  // e bypassa tutti i problemi di renderingRef/race condition.
+  // ---------------------------------------------------------------------------
+  const drawHighlightsOnly = useCallback((hl: ActiveHighlight | null) => {
+    const vp = cssViewportRef.current;
+    if (!vp) return;
+    drawHighlights(hl, vp);
+  }, [drawHighlights]);
+
+  // ---------------------------------------------------------------------------
+  // doRender: renderizza canvas + textLayer + highlight per la pagina corrente.
+  // ---------------------------------------------------------------------------
   const doRender = useCallback(async (seq: number) => {
     const pdf    = pdfDocRef.current;
     const canvas = canvasRef.current;
@@ -609,8 +566,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const page   = currentPageRef.current;
     const hl     = highlightRef.current;
     if (!pdf || !canvas || !tlDiv) return;
-    if (seq !== renderSeqRef.current) return;
 
+    // Cancella render e textLayer precedenti
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch { /**/ }
       renderTaskRef.current = null;
@@ -619,24 +576,23 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       try { textLayerTaskRef.current.cancel(); } catch { /**/ }
       textLayerTaskRef.current = null;
     }
-    if (renderingRef.current) return;
-    renderingRef.current = true;
 
     try {
       const pdfPage = await pdf.getPage(page);
+      // Controlla seq DOPO l'await (potrebbe essere arrivato un render più recente)
       if (seq !== renderSeqRef.current) return;
 
       const dpr        = window.devicePixelRatio || 1;
       const BASE_SCALE = 1.5;
 
-      // FIX #6: viewport per il canvas usa scale*dpr (alta risoluzione fisica)
+      // canvasViewport: alta risoluzione fisica per il canvas (scale * dpr)
       const canvasViewport = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
-      // FIX #5 + #6: viewport CSS (BASE_SCALE puro) usato per:
-      //   - dimensioni CSS del canvas
-      //   - textLayer (coordinate CSS)
-      //   - hlLayer (coordinate CSS)
-      //   - drawHighlights (convertToViewportPoint → CSS)
+      // cssViewport: coordinate CSS pure (BASE_SCALE senza DPR) per textLayer,
+      // hlLayer e drawHighlights
       const cssViewport = pdfPage.getViewport({ scale: BASE_SCALE });
+
+      // Salva il viewport CSS per drawHighlightsOnly (usato quando cambia solo hl)
+      cssViewportRef.current = cssViewport;
 
       canvas.width  = canvasViewport.width;
       canvas.height = canvasViewport.height;
@@ -644,9 +600,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       const cssH = cssViewport.height;
       canvas.style.width  = `${cssW}px`;
       canvas.style.height = `${cssH}px`;
-      pageCssSize.current = { w: cssW, h: cssH };
 
-      // FIX #6: textLayer usa cssViewport (stessa scala delle coordinate bbox)
       tlDiv.style.width  = `${cssW}px`;
       tlDiv.style.height = `${cssH}px`;
       tlDiv.innerHTML    = '';
@@ -657,7 +611,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       }
 
       const ctx  = canvas.getContext('2d')!;
-      // Render canvas ad alta risoluzione (fisica)
       const task = pdfPage.render({ canvasContext: ctx, viewport: canvasViewport });
       renderTaskRef.current = task;
       await task.promise;
@@ -667,7 +620,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       const textContent = await pdfPage.getTextContent();
       if (seq !== renderSeqRef.current) return;
 
-      // FIX #6: TextLayer usa cssViewport per coordinate CSS corrette
       const tl = new TextLayer({
         textContentSource: textContent,
         container: tlDiv,
@@ -678,15 +630,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       textLayerTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
 
-      // FIX #5: passa cssViewport a drawHighlights (no DPR nelle coordinate)
+      // Disegna highlight al termine del render se la pagina corrisponde
       if (hl && hl.page === page) drawHighlights(hl, cssViewport);
 
     } catch (e: unknown) {
       if ((e as { name?: string })?.name !== 'RenderingCancelledException')
         console.warn('[PdfViewer] render error:', e);
-    } finally {
-      renderingRef.current = false;
     }
+    // FIX: nessun finally con renderingRef — la gestione della concorrenza
+    // è affidata esclusivamente a renderSeqRef.
   }, [drawHighlights]);
 
   const requestRender = useCallback(() => {
@@ -701,10 +653,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     requestRender();
   }, [requestRender]);
 
+  // Carica il PDF quando cambia il file
   useEffect(() => {
     pdfDocRef.current = null;
+    cssViewportRef.current = null;
     renderSeqRef.current++;
-    renderingRef.current = false;
     currentPageRef.current = 1;
     setCurrentPage(1);
     setTotalPages(1);
@@ -719,14 +672,23 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     return () => { cancelled = true; };
   }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reagisce ai cambi di highlight
   useEffect(() => {
     highlightRef.current = highlight;
-    if (highlight?.page && highlight.page !== currentPageRef.current) {
-      currentPageRef.current = highlight.page;
-      setCurrentPage(highlight.page);
-      if (pdfDocRef.current) requestRender();
-    } else if (pdfDocRef.current) {
+
+    if (!pdfDocRef.current) return;
+
+    const targetPage = highlight?.page ?? null;
+
+    if (targetPage && targetPage !== currentPageRef.current) {
+      // Pagina diversa: cambia pagina e ri-renderizza (incluso highlight al termine)
+      currentPageRef.current = targetPage;
+      setCurrentPage(targetPage);
       requestRender();
+    } else {
+      // FIX PRINCIPALE: stessa pagina (o nessuna pagina) — disegna solo i box
+      // senza toccare canvas né textLayer. Evita re-render inutili e race conditions.
+      drawHighlightsOnly(highlight);
     }
   }, [highlight]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -861,18 +823,15 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
-  // FIX #1: colorIndex e fileIdx sono ora argomenti distinti.
-  // colorIndex: indice nell'array HIGHLIGHT_COLORS (cosmesi).
-  // fileIdx: indice in files[] per sapere quale PDF aprire.
   const handleFieldFocus = useCallback(async (
     field: ExtractedField<unknown> | null,
     colorIndex: number,
     fileIdx: number,
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
-    // rawLabel è string | null — il controllo è su null o stringa vuota
     if (!field?.page || (!field.rawText && !field.rawLabel)) { setActiveHighlight(null); return; }
 
+    // Imposta subito un placeholder per far scattare il cambio pagina nel viewer
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
 
@@ -880,6 +839,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
       const result = await findBboxForField(doc, field.page, field);
       if (!result) return;
+      // Aggiorna con le bbox reali: se la pagina è già quella corretta,
+      // PdfViewer chiamerà drawHighlightsOnly senza ri-renderizzare il canvas.
       setActiveHighlight({
         page: field.page,
         bboxes: result.bboxes,
@@ -1028,7 +989,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                           isUnavail ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
                           : hasPage ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
                           : 'border-slate-200 focus:ring-slate-300'}`}
-                        // FIX #1: colorIndex=yearIdx (colore), fileIdx=yearIdx (file) — ora semanticamente distinti
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
