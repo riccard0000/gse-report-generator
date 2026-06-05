@@ -80,37 +80,23 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
-/**
- * Testo da mostrare nella didascalia sotto il campo.
- * Usa rawLabel se disponibile (solo etichetta, senza numeri),
- * altrimenti cade su rawText con pulizia leggera.
- */
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
-  // Preferisce rawLabel — già privo di numeri per costruzione
   const src = (field.rawLabel?.trim()) || field.rawText?.trim() || '';
   if (!src) return '';
-  // Rimuove numeri residui solo se stiamo usando rawText come fallback
   let s = field.rawLabel
     ? src
     : src
         .replace(/[\t]/g, ' ')
-        // spazio lettera→cifra e cifra→lettera (non cifra→cifra)
-        .replace(/([A-Za-z\u00c0-\u00ff)])(\\d)/g, '$1 $2')
-        .replace(/(\\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
+        .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
+        .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
         .replace(/\s{2,}/g, ' ')
         .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
   return s;
 }
 
-/**
- * Testo da usare per cercare la bbox nel PDF.
- * Usa rawLabel se disponibile (etichetta pura),
- * altrimenti estrae la parte testuale da rawText rimuovendo i numeri.
- */
 function lookupLabel(field: ExtractedField<unknown>): string {
   if (field.rawLabel?.trim()) return field.rawLabel.trim();
-  // Fallback: rimuove numeri e punteggiatura numerica da rawText
   const s = (field.rawText || '')
     .replace(/[\t]/g, ' ')
     .replace(/-?[\d][\d.,]*/g, '')
@@ -142,8 +128,6 @@ interface PdfTextItem {
 
 /**
  * Fonde token adiacenti sulla STESSA riga con gap molto stretto (≤2pt).
- * Serve per numeri spezzati dal PDF (es. "160." + "638").
- * NON fonde colonne distanti come anno corrente vs anno precedente.
  */
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -164,9 +148,9 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
     while (j < sorted.length) {
       const next  = sorted[j];
       const gap   = next.transform[4] - fusedX1;
-      if (Math.abs(next.transform[5] - curY) > 3) break;  // riga diversa
-      if (gap > 2) break;                                   // colonne separate — NON fondere
-      if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break; // nessuna cifra — non vale
+      if (Math.abs(next.transform[5] - curY) > 3) break;
+      if (gap > 2) break;
+      if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break;
       fusedStr    += next.str;
       fusedX1      = next.transform[4] + next.width;
       fusedHeight  = Math.max(fusedHeight, next.height);
@@ -183,6 +167,47 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   return merged;
 }
 
+/**
+ * Costruisce token "riga intera" fondendo tutti i token sulla stessa riga Y.
+ * Usato per cercare etichette multi-span (es. "Totale valore" + "della produzione"
+ * sono due span PDF separati ma appartengono alla stessa riga logica).
+ */
+function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
+  if (items.length === 0) return [];
+  const Y_ROW_TOL = 3;
+  const sorted = [...items].sort((a, b) => {
+    const dy = b.transform[5] - a.transform[5];
+    if (Math.abs(dy) > Y_ROW_TOL) return dy;
+    return a.transform[4] - b.transform[4];
+  });
+  const rows: PdfTextItem[][] = [];
+  let currentRow: PdfTextItem[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = currentRow[currentRow.length - 1];
+    if (Math.abs(sorted[i].transform[5] - prev.transform[5]) <= Y_ROW_TOL) {
+      currentRow.push(sorted[i]);
+    } else {
+      rows.push(currentRow);
+      currentRow = [sorted[i]];
+    }
+  }
+  rows.push(currentRow);
+
+  return rows.map(row => {
+    const first  = row[0];
+    const last   = row[row.length - 1];
+    const x0     = first.transform[4];
+    const x1     = last.transform[4] + last.width;
+    const fullStr = row.map(t => t.str).join(' ').replace(/\s{2,}/g, ' ');
+    return {
+      str: fullStr,
+      transform: [...first.transform],
+      width: x1 - x0,
+      height: Math.max(...row.map(t => t.height)),
+    };
+  });
+}
+
 function findNumericNeighborForItem(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
@@ -192,7 +217,6 @@ function findNumericNeighborForItem(
   const labelX1 = labelItem.transform[4] + labelItem.width;
   const Y_TOL   = 5;
 
-  // Usa i token fusi (solo gap ≤2pt) per ricomporre numeri spezzati
   const mergedItems = buildMergedTokens(items);
 
   const sameRow = mergedItems.filter(it => {
@@ -208,7 +232,6 @@ function findNumericNeighborForItem(
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
 
-    // Match esatto sulle cifre normalizzate
     const exactMatch = pool.find(it => normalizeNumStr(it.str) === targetDigits);
     if (exactMatch) {
       const tf = exactMatch.transform;
@@ -218,7 +241,6 @@ function findNumericNeighborForItem(
       };
     }
 
-    // Fallback: token numerico più vicino per valore assoluto
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
@@ -228,7 +250,6 @@ function findNumericNeighborForItem(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    // Accetta il best match solo se ragionevolmente vicino (entro 5% o 10 unità)
     const threshold = Math.max(10, absVal * 0.05);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
@@ -237,11 +258,9 @@ function findNumericNeighborForItem(
         numericDistance: bestDist,
       };
     }
-    // Se nessun token è sufficientemente vicino, non evidenziare il numero
     return { numBbox: null, numericDistance: Infinity };
   }
 
-  // Nessun fieldValue: usa il token numerico più a sinistra nella riga
   const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return {
@@ -250,6 +269,16 @@ function findNumericNeighborForItem(
   };
 }
 
+/**
+ * Cerca l'etichetta sia tra i token singoli (span PDF) sia tra i token
+ * di riga intera (per etichette spezzate in più span consecutivi).
+ * Strategia:
+ *  1. Match esatto sul singolo span
+ *  2. Match esatto sulla riga intera (multi-span)
+ *  3. Match per parole chiave (soglia ≥ metà delle keyword)
+ *  4. Fallback: primo span che contiene la prima keyword
+ * Restituisce l'item "radice" (primo span della riga) per il calcolo della bbox.
+ */
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
   labelText: string,
@@ -258,49 +287,75 @@ async function findSingleBboxWithItem(
   const seg = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
-  // Match esatto sull'etichetta
-  const exactMatches = items.filter(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg);
-  let candidates: PdfTextItem[] = exactMatches;
+  // ── 1. Match esatto sul singolo span ─────────────────────────────────
+  const exactSingle = items.filter(it =>
+    it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
+  );
 
-  if (candidates.length === 0) {
-    const keywords = seg
-      .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length >= 3)
-      .slice(0, 5);
-    if (keywords.length > 0) {
-      const threshold = Math.max(1, Math.ceil(keywords.length / 2));
-      const kwMatches: PdfTextItem[] = [];
-      for (const item of items) {
-        const txt   = item.str.toLowerCase();
-        const count = keywords.filter(w => txt.includes(w)).length;
-        if (count >= threshold) kwMatches.push(item);
-      }
-      candidates = kwMatches;
-      if (candidates.length === 0)
-        candidates = items.filter(it => it.str.toLowerCase().includes(keywords[0]));
+  // ── 2. Match esatto sulla riga intera (multi-span fusi) ──────────────
+  const rowTokens = buildRowTokens(items);
+  const exactRow  = rowTokens.filter(rt =>
+    rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
+  );
+
+  // ── 3. Match per parole chiave ────────────────────────────────────────
+  const keywords = seg
+    .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3)
+    .slice(0, 5);
+
+  // Combina tutti i candidati in ordine di priorità
+  let candidates: PdfTextItem[] = [
+    ...exactSingle,
+    ...exactRow,
+  ];
+
+  if (candidates.length === 0 && keywords.length > 0) {
+    // Cerca nei singoli span
+    const threshold = Math.max(1, Math.ceil(keywords.length / 2));
+    const kwSingle = items.filter(it => {
+      const txt   = it.str.toLowerCase();
+      const count = keywords.filter(w => txt.includes(w)).length;
+      return count >= threshold;
+    });
+    // Cerca nelle righe intere
+    const kwRow = rowTokens.filter(rt => {
+      const txt   = rt.str.toLowerCase();
+      const count = keywords.filter(w => txt.includes(w)).length;
+      return count >= threshold;
+    });
+    candidates = [...kwSingle, ...kwRow];
+
+    // Fallback: primo span / riga che contiene la prima keyword
+    if (candidates.length === 0 && keywords[0]) {
+      const fbSingle = items.find(it => it.str.toLowerCase().includes(keywords[0]));
+      const fbRow    = rowTokens.find(rt => rt.str.toLowerCase().includes(keywords[0]));
+      if (fbSingle) candidates.push(fbSingle);
+      else if (fbRow) candidates.push(fbRow);
     }
   }
+
   if (candidates.length === 0) return null;
-  if (candidates.length === 1) {
-    const found = candidates[0];
-    const tf    = found.transform;
-    return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
-  }
-  // Più candidati: scegli quello con il valore numerico più vicino a fieldValue
-  if (fieldValue !== null && fieldValue !== undefined) {
+
+  // Scegli il candidato con valore numerico più vicino a fieldValue
+  const pickBest = (pool: PdfTextItem[]): PdfTextItem => {
+    if (pool.length === 1 || fieldValue == null) return pool[0];
     let bestDist = Infinity;
-    let bestItem = candidates[0];
-    for (const c of candidates) {
+    let best = pool[0];
+    for (const c of pool) {
       const { numericDistance } = findNumericNeighborForItem(items, c, fieldValue);
-      if (numericDistance < bestDist) { bestDist = numericDistance; bestItem = c; }
+      if (numericDistance < bestDist) { bestDist = numericDistance; best = c; }
     }
-    const tf = bestItem.transform;
-    return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height }, item: bestItem };
-  }
-  const found = candidates[0];
-  const tf    = found.transform;
-  return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
+    return best;
+  };
+
+  const winner = pickBest(candidates);
+  const tf     = winner.transform;
+  return {
+    bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + winner.width, y1: tf[5] + winner.height },
+    item: winner,
+  };
 }
 
 async function findBboxForField(
@@ -314,15 +369,12 @@ async function findBboxForField(
     const items   = content.items as PdfTextItem[];
     const fv      = typeof field.value === 'number' ? field.value : null;
 
-    // Determina il testo dell'etichetta da cercare
     const label = lookupLabel(field);
     if (!label) return null;
 
-    // Cerca la riga etichetta nel PDF
     const r = await findSingleBboxWithItem(items, label, fv);
     if (!r) return null;
 
-    // Trova il numero vicino corrispondente a field.value
     const { numBbox } = findNumericNeighborForItem(items, r.item, fv);
 
     return {
@@ -336,8 +388,8 @@ async function findBboxForField(
 }
 
 /**
- * Cerca la bbox di un testo libero (fonteTestuale della checklist)
- * su una pagina del PDF. Usa match per sottostringa su tutti i token.
+ * Cerca la bbox di un testo libero (fonteTestuale della checklist).
+ * Cerca prima nei singoli span, poi nelle righe intere fuse.
  */
 async function findBboxForFreeText(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -349,7 +401,6 @@ async function findBboxForFreeText(
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
 
-    // Prende le prime 6 parole significative come query
     const words = text
       .toLowerCase()
       .replace(/[^\w\u00c0-\u00ff\s]/g, ' ')
@@ -360,17 +411,32 @@ async function findBboxForFreeText(
     if (words.length === 0) return [];
 
     const threshold = Math.max(1, Math.ceil(words.length * 0.5));
-    const matched: PdfTextItem[] = [];
+
+    // Cerca nei singoli span
+    const matchedSingle: PdfTextItem[] = [];
     for (const item of items) {
       const txt   = item.str.toLowerCase();
       const count = words.filter(w => txt.includes(w)).length;
-      if (count >= threshold) matched.push(item);
+      if (count >= threshold) matchedSingle.push(item);
     }
+
+    // Cerca nelle righe intere fuse
+    const rowTokens = buildRowTokens(items);
+    const matchedRow: PdfTextItem[] = [];
+    for (const rt of rowTokens) {
+      const txt   = rt.str.toLowerCase();
+      const count = words.filter(w => txt.includes(w)).length;
+      if (count >= threshold) matchedRow.push(rt);
+    }
+
+    const matched = matchedSingle.length > 0 ? matchedSingle : matchedRow;
 
     if (matched.length === 0) {
       // fallback: primo token che contiene la prima parola chiave
-      const fb = items.find(it => it.str.toLowerCase().includes(words[0]));
-      if (fb) matched.push(fb);
+      const fb = items.find(it => it.str.toLowerCase().includes(words[0]))
+               ?? rowTokens.find(rt => rt.str.toLowerCase().includes(words[0]));
+      if (fb) return [{ x0: fb.transform[4], y0: fb.transform[5], x1: fb.transform[4] + fb.width, y1: fb.transform[5] + fb.height }];
+      return [];
     }
 
     return matched.slice(0, 3).map(it => {
@@ -771,10 +837,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
-  /**
-   * Highlight per una voce checklist: usa fonteTestuale come testo libero
-   * e cerca la bbox sulla pagina indicata nel documento del tab attivo.
-   */
   const handleChecklistClick = useCallback(async (
     fonteTestuale: string | undefined,
     page: number | null | undefined,
@@ -785,7 +847,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
       return;
     }
 
-    // Placeholder immediato per feedback visivo
     setActiveHighlight({
       page,
       bboxes: [EMPTY_BBOX],

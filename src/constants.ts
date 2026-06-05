@@ -14,8 +14,6 @@ export const OPENROUTER_ENDPOINT = import.meta.env.VITE_PROXY_URL as string;
 /**
  * Sezione CONTRATTUALE — non editabile, non inviata al KV.
  * Definisce ruolo, mappature voci di bilancio, struttura JSON di output.
- * Questa sezione garantisce l'integrità del parsing e NON deve essere
- * modificata dall'utente per non rompere il flusso di estrazione.
  */
 export const EXTRACTION_PROMPT_CONTRACT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE.
 Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
@@ -42,16 +40,24 @@ Mappe voci di bilancio (schema italiano CE/SP):
 - "debitiPrevidenziali" = debiti previdenziali/INPS/INAIL SP o nota integrativa
 - "fondoRischiOneri" = B) Fondi per rischi e oneri SP
 
-Per ciascun valore numerico includi sempre questi 4 campi:
+Per ciascun valore numerico includi SEMPRE questi 4 campi:
 - "value": numero intero (0 se assente, null se non trovato)
-- "page": numero di pagina del PDF
-- "rawText": la riga testuale COMPLETA del documento (etichetta + tutti i numeri presenti)
-- "rawLabel": SOLO il testo dell'etichetta/voce, SENZA NESSUN NUMERO.
-  Esempio: se la riga è "Totale valore della produzione   818.547   778.956",
-  rawText = "Totale valore della produzione 818.547 778.956",
-  rawLabel = "Totale valore della produzione".
+- "page": numero di pagina del PDF (OBBLIGATORIO — non lasciare null se il valore è stato trovato)
+- "rawText": la riga testuale COMPLETA del documento così come appare (etichetta + tutti i numeri presenti sulla riga).
+  Esempio: "Totale valore della produzione\t818.547\t778.956"
+- "rawLabel": SOLO il testo dell'etichetta/voce, SENZA NESSUN NUMERO, SENZA TABULAZIONI, SENZA PUNTEGGIATURA NUMERICA.
+  REGOLA CRITICA: rawLabel deve contenere SOLO parole alfabetiche (lettere, spazi, apostrofi).
+  NESSUNA cifra, NESSUN punto decimale, NESSUNA virgola numerica, NESSUN trattino numerico.
+  Esempi corretti:
+    riga "Totale valore della produzione   818.547   778.956" → rawLabel = "Totale valore della produzione"
+    riga "B) Fondi per rischi e oneri   12.000   9.500"      → rawLabel = "Fondi per rischi e oneri"
+    riga "IV - Disponibilità liquide    5.320"               → rawLabel = "Disponibilità liquide"
+    riga "C17) Interessi e oneri fin.   (3.200)"            → rawLabel = "Interessi e oneri finanziari"
+  Esempi ERRATI (non fare mai):
+    rawLabel = "818.547"  ← contiene cifre
+    rawLabel = "A - B"    ← contiene trattino numerico
+    rawLabel = "21."      ← solo numeri
   Per formule/calcoli (es. EBITDA stimato), rawLabel = nome della voce principale (es. "Differenza tra valore e costi della produzione").
-  rawLabel NON deve mai contenere cifre, punti decimali o virgole numeriche.
 
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
@@ -107,8 +113,7 @@ Struttura JSON richiesta (NON modificare i nomi delle chiavi):
 
 /**
  * Sezione CUSTOM di default per il prompt di estrazione.
- * Questa parte è editabile dall'utente dalle Impostazioni e salvata su KV.
- * Viene accodata al testo contrattuale prima di ogni chiamata AI.
+ * Editabile dall'utente dalle Impostazioni e salvata su KV.
  */
 export const EXTRACTION_PROMPT_CUSTOM_DEFAULT = `Presta particolare attenzione a:
 - Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)
@@ -116,10 +121,6 @@ export const EXTRACTION_PROMPT_CUSTOM_DEFAULT = `Presta particolare attenzione a
 - Riportare i valori in unità di euro (non in migliaia)`;
 
 // ─── PROMPT NARRATIVA ─────────────────────────────────────────────────────
-/**
- * Sezione CONTRATTUALE del prompt narrativa — non editabile.
- * Definisce ruolo, struttura output JSON, esito a 3 valori fissi.
- */
 export const NARRATIVE_PROMPT_CONTRACT = (extractedDataJson: string, kpiJson: string) =>
   `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilita del debito da extraprofitti (art. 15-bis D.L. 4/2022).
 
@@ -140,32 +141,25 @@ Redigi una relazione tecnica professionale in italiano con le seguenti sezioni. 
 
 Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.`;
 
-/**
- * Sezione CUSTOM di default per il prompt narrativa.
- * Editabile dall'utente dalle Impostazioni e salvata su KV.
- */
 export const NARRATIVE_PROMPT_CUSTOM_DEFAULT = `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.
 Se i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.
 Evita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`;
 
 /**
- * Helper: assembla il prompt completo unendo sezione contrattuale + custom.
- * La sezione custom, se vuota, viene omessa.
+ * Assembla il prompt di estrazione: sezione contrattuale + custom + fileName.
  */
 export const buildExtractionPrompt = (custom: string, fileName: string): string => {
   const customTrimmed = custom.trim();
-  const base = EXTRACTION_PROMPT_CONTRACT
+  return EXTRACTION_PROMPT_CONTRACT
     + (customTrimmed ? `\n\nISTRUZIONI AGGIUNTIVE (configurate dall'operatore):\n${customTrimmed}` : '')
     + `\n\nNOTA: Stai analizzando UN SOLO documento (${fileName}).\nNell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).\nCompila comunque companyName, vatNumber, gseResidual e checklist.`;
-  return base;
 };
 
+/**
+ * Assembla il prompt narrativa: sezione contrattuale + custom.
+ */
 export const buildNarrativePrompt = (custom: string, extractedDataJson: string, kpiJson: string): string => {
   const customTrimmed = custom.trim();
   return NARRATIVE_PROMPT_CONTRACT(extractedDataJson, kpiJson)
     + (customTrimmed ? `\n\nISTRUZIONI AGGIUNTIVE (configurate dall'operatore):\n${customTrimmed}` : '');
 };
-
-// Alias mantenuti per retrocompatibilità (usati da geminiService esistente — saranno rimossi)
-export const EXTRACTION_PROMPT = EXTRACTION_PROMPT_CONTRACT;
-export const NARRATIVE_PROMPT  = (e: string, k: string) => NARRATIVE_PROMPT_CONTRACT(e, k);

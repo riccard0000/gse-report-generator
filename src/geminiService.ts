@@ -5,8 +5,8 @@ import {
   OPENROUTER_MODEL_NARRATIVE,
   OPENROUTER_MODEL_FALLBACK,
   OPENROUTER_ENDPOINT,
-  EXTRACTION_PROMPT,
-  NARRATIVE_PROMPT,
+  buildExtractionPrompt,
+  buildNarrativePrompt,
 } from './constants';
 import { calculateKpis } from './kpiCalculator';
 
@@ -25,6 +25,8 @@ const isPdfTextItem = (item: unknown): item is PdfTextItem =>
 interface ModelConfig {
   extract:   { primary: string; fallback: string };
   narrative: { primary: string; fallback: string };
+  extractCustom?:   string;
+  narrativeCustom?: string;
 }
 
 let _cachedConfig: ModelConfig | null = null;
@@ -34,6 +36,8 @@ const getModelConfig = async (): Promise<ModelConfig> => {
   const defaultConfig: ModelConfig = {
     extract:   { primary: OPENROUTER_MODEL_EXTRACT,   fallback: OPENROUTER_MODEL_FALLBACK },
     narrative: { primary: OPENROUTER_MODEL_NARRATIVE, fallback: OPENROUTER_MODEL_FALLBACK },
+    extractCustom:   '',
+    narrativeCustom: '',
   };
   try {
     const base = OPENROUTER_ENDPOINT ?? '';
@@ -41,14 +45,13 @@ const getModelConfig = async (): Promise<ModelConfig> => {
     const res = await fetch(base.replace(/\/$/, '') + '/config');
     if (!res.ok) return defaultConfig;
     const data = await res.json() as { models?: ModelConfig };
-    _cachedConfig = data.models ?? defaultConfig;
+    _cachedConfig = { ...defaultConfig, ...(data.models ?? {}) };
     return _cachedConfig;
   } catch {
     return defaultConfig;
   }
 };
 
-// Invalida la cache quando le impostazioni vengono salvate
 export const invalidateModelConfigCache = () => { _cachedConfig = null; };
 
 // ─── Parsing strutturale del PDF ──────────────────────────────────────────
@@ -143,7 +146,6 @@ const withRetry = async (
   throw lastErr;
 };
 
-// ─── Cascade dinamica basata sulla config KV ─────────────────────────────
 const callOpenRouterExtract = async (
   messages: object[],
   onProgress?: (msg: string) => void
@@ -192,9 +194,6 @@ const callOpenRouterNarrative = async (
   throw lastErr;
 };
 
-const SINGLE_PDF_PROMPT = (fileName: string) =>
-  `${EXTRACTION_PROMPT}\n\nNOTA: Stai analizzando UN SOLO documento (${fileName}).\nNell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).\nCompila comunque companyName, vatNumber, gseResidual e checklist.`;
-
 const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
   const base = results[0];
   const allYears = results
@@ -227,6 +226,10 @@ export const extractDataFromPdfs = async (
   files: File[],
   onProgress?: (msg: string) => void
 ): Promise<ExtractedData> => {
+  onProgress?.('Lettura configurazione modelli...');
+  const cfg = await getModelConfig();
+  const extractCustom = cfg.extractCustom ?? '';
+
   onProgress?.('Estrazione testo dai PDF...');
   const docTexts: { fileName: string; text: string }[] = [];
   for (const file of files) {
@@ -243,10 +246,12 @@ export const extractDataFromPdfs = async (
     onProgress?.(`Analisi AI [${i + 1}/${docTexts.length}]: ${fileName}...`);
     if (i > 0) await sleep(1500);
     try {
+      // Usa buildExtractionPrompt con la sezione custom dal KV
+      const prompt = buildExtractionPrompt(extractCustom, fileName);
       const raw = await callOpenRouterExtract(
         [
           { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
-          { role: 'user', content: `${SINGLE_PDF_PROMPT(fileName)}\n\n=== DOCUMENTO: ${fileName} ===\n${text}` },
+          { role: 'user', content: `${prompt}\n\n=== DOCUMENTO: ${fileName} ===\n${text}` },
         ],
         (msg) => onProgress?.(`  [PDF ${i + 1}] ${msg}`)
       );
@@ -276,11 +281,22 @@ export const generateNarrative = async (
   onProgress?.('Calcolo KPI deterministici...');
   const lastYear = data.yearsData[data.yearsData.length - 1];
   const kpis = calculateKpis(lastYear, data.gseResidual?.value ?? null);
+
+  onProgress?.('Lettura configurazione narrativa...');
+  const cfg = await getModelConfig();
+  const narrativeCustom = cfg.narrativeCustom ?? '';
+
   onProgress?.('Generazione narrativa tecnica (seconda chiamata AI)...');
+  // Usa buildNarrativePrompt con la sezione custom dal KV
+  const prompt = buildNarrativePrompt(
+    narrativeCustom,
+    JSON.stringify(data, null, 2),
+    JSON.stringify({ anno: lastYear.year, ...kpis }, null, 2)
+  );
   const text = await callOpenRouterNarrative(
     [
       { role: 'system', content: 'Sei un funzionario GSE esperto. Rispondi solo in JSON valido, senza markdown.' },
-      { role: 'user', content: NARRATIVE_PROMPT(JSON.stringify(data, null, 2), JSON.stringify({ anno: lastYear.year, ...kpis }, null, 2)) },
+      { role: 'user', content: prompt },
     ],
     onProgress
   );
