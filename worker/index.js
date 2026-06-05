@@ -2,23 +2,22 @@
  * Cloudflare Worker — Proxy OpenRouter per GSE Report Generator
  *
  * ROTTE:
- *   POST /           — proxy chiamata OpenRouter (chat completions)
- *   GET  /config     — legge modelli       (KV key: gse_model_config)
- *   POST /config     — salva modelli       (KV key: gse_model_config)
- *   GET  /prompts    — legge prompt custom  (KV key: gse_prompt)
- *   POST /prompts    — salva prompt custom  (KV key: gse_prompt)
- *   GET  /models     — lista modelli da OpenRouter
- *   POST /history    — crea/aggiorna record storico (KV keys: history_index + history:*)
- *   GET  /history    — lista metadata ExtractionMeta[]
+ *   POST /            — proxy chiamata OpenRouter (chat completions)
+ *   GET  /config      — legge modelli       (KV key: gse_model_config) — auto-init se vuoto
+ *   POST /config      — salva modelli       (KV key: gse_model_config)
+ *   GET  /prompts     — legge prompt custom  (KV key: gse_prompt) — auto-init se vuoto
+ *   POST /prompts     — salva prompt custom  (KV key: gse_prompt)
+ *   GET  /models      — lista modelli da OpenRouter
+ *   POST /history     — crea/aggiorna record storico
+ *   GET  /history     — lista metadata ExtractionMeta[]
  *   GET  /history/:id — record completo ExtractionRecord
- *   OPTIONS *        — preflight CORS
+ *   OPTIONS *         — preflight CORS
  *
- * KV NAMESPACE BINDING (wrangler.toml):
- *   GSE_CONFIG — unico namespace, contiene:
- *     - gse_model_config  → configurazione modelli AI
- *     - gse_prompt        → prompt custom estrazione e narrativa
- *     - history_index     → array metadati storico
- *     - history:<ts>:<cf> → record completo singola estrazione
+ * KV NAMESPACE BINDING: GSE_CONFIG (unico namespace)
+ *   gse_model_config  → modelli AI primary/fallback
+ *   gse_prompt        → prompt custom estrazione + narrativa
+ *   history_index     → array metadati storico
+ *   history:<ts>:<cf> → record completo singola estrazione
  */
 
 const ALLOWED_ORIGINS = [
@@ -27,13 +26,33 @@ const ALLOWED_ORIGINS = [
   'http://localhost:4173',
 ];
 
-const OPENROUTER_URL        = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_URL         = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_MODELS_URL  = 'https://openrouter.ai/api/v1/models';
 
-// Chiavi KV — tutte dentro GSE_CONFIG
+// Chiavi KV
 const KV_MODELS_KEY    = 'gse_model_config';
 const KV_PROMPTS_KEY   = 'gse_prompt';
 const KV_HISTORY_INDEX = 'history_index';
+
+// ── Valori di default ────────────────────────────────────────────────────────
+const DEFAULT_MODELS = {
+  models: {
+    extract:   { primary: 'nvidia/nemotron-3-super-120b-a12b:free', fallback: 'google/gemma-4-31b-it:free' },
+    narrative: { primary: 'nvidia/nemotron-3-super-120b-a12b:free', fallback: 'google/gemma-4-31b-it:free' },
+  },
+};
+
+const DEFAULT_PROMPTS = {
+  extraction: `Presta particolare attenzione a:
+- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)
+- Leggere le note integrative per voci non presenti nello schema abbreviato
+- Riportare i valori in unità di euro (non in migliaia)`,
+  narrative: `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.
+Se i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.
+Evita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`,
+};
+
+// ───────────────────────────────────────────────────────────────────
 
 function getCorsHeaders(origin) {
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -79,24 +98,29 @@ export default {
     const url      = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
-    // ── GET /config ── legge modelli (gse_model_config) ───────────────────────
+    // ── GET /config ── legge modelli, auto-init se vuoto ───────────────────────
     if (request.method === 'GET' && pathname === '/config') {
       try {
         const raw = kv ? await kv.get(KV_MODELS_KEY) : null;
-        return jsonResponse(raw ? JSON.parse(raw) : {}, 200, corsHeaders);
+        if (raw) {
+          return jsonResponse(JSON.parse(raw), 200, corsHeaders);
+        }
+        // Prima volta: scrivi i default e restituiscili
+        if (kv) await kv.put(KV_MODELS_KEY, JSON.stringify(DEFAULT_MODELS));
+        return jsonResponse(DEFAULT_MODELS, 200, corsHeaders);
       } catch {
-        return jsonResponse({}, 200, corsHeaders);
+        return jsonResponse(DEFAULT_MODELS, 200, corsHeaders);
       }
     }
 
-    // ── POST /config ── salva modelli (gse_model_config) ─────────────────────
+    // ── POST /config ── salva modelli ────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/config') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       let body;
       try { body = await request.json(); }
       catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
 
-      let existing = {};
+      let existing = { ...DEFAULT_MODELS };
       try { const r = await kv.get(KV_MODELS_KEY); if (r) existing = JSON.parse(r); } catch { /**/ }
       const merged = { ...existing, ...(body.models ? { models: body.models } : {}) };
       try {
@@ -107,24 +131,29 @@ export default {
       }
     }
 
-    // ── GET /prompts ── legge prompt (gse_prompt) ─────────────────────────────
+    // ── GET /prompts ── legge prompt, auto-init se vuoto ─────────────────────
     if (request.method === 'GET' && pathname === '/prompts') {
       try {
         const raw = kv ? await kv.get(KV_PROMPTS_KEY) : null;
-        return jsonResponse(raw ? JSON.parse(raw) : {}, 200, corsHeaders);
+        if (raw) {
+          return jsonResponse(JSON.parse(raw), 200, corsHeaders);
+        }
+        // Prima volta: scrivi i default e restituiscili
+        if (kv) await kv.put(KV_PROMPTS_KEY, JSON.stringify(DEFAULT_PROMPTS));
+        return jsonResponse(DEFAULT_PROMPTS, 200, corsHeaders);
       } catch {
-        return jsonResponse({}, 200, corsHeaders);
+        return jsonResponse(DEFAULT_PROMPTS, 200, corsHeaders);
       }
     }
 
-    // ── POST /prompts ── salva prompt (gse_prompt) ────────────────────────────
+    // ── POST /prompts ── salva prompt ─────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/prompts') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       let body;
       try { body = await request.json(); }
       catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
 
-      let existing = {};
+      let existing = { ...DEFAULT_PROMPTS };
       try { const r = await kv.get(KV_PROMPTS_KEY); if (r) existing = JSON.parse(r); } catch { /**/ }
       const merged = {
         ...existing,
@@ -139,7 +168,7 @@ export default {
       }
     }
 
-    // ── GET /models ───────────────────────────────────────────────────────────
+    // ── GET /models ──────────────────────────────────────────────────────────
     if (request.method === 'GET' && pathname === '/models') {
       if (!env.OPENROUTER_API_KEY) return jsonResponse({ error: 'Chiave API non configurata.' }, 500, corsHeaders);
       try {
@@ -151,7 +180,7 @@ export default {
       }
     }
 
-    // ── GET /history ── lista metadata ────────────────────────────────────────
+    // ── GET /history ── lista metadata ───────────────────────────────────────
     if (request.method === 'GET' && pathname === '/history') {
       if (!kv) return jsonResponse([], 200, corsHeaders);
       try {
@@ -164,7 +193,7 @@ export default {
       }
     }
 
-    // ── POST /history ── crea (step=extracted) o aggiorna (step=confirmed) ────
+    // ── POST /history ── crea (extracted) o aggiorna (confirmed) ─────────────
     if (request.method === 'POST' && pathname === '/history') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       let body;
@@ -187,7 +216,6 @@ export default {
           await updateIndex(kv, record);
           return jsonResponse({ ok: true, id }, 200, corsHeaders);
         } else {
-          // step === 'confirmed'
           if (!confirmedData) return jsonResponse({ error: 'confirmedData mancante.' }, 400, corsHeaders);
           if (!existingId)    return jsonResponse({ error: 'id mancante per step=confirmed.' }, 400, corsHeaders);
           let rec;
@@ -208,7 +236,7 @@ export default {
       }
     }
 
-    // ── GET /history/:id ── record completo ───────────────────────────────────
+    // ── GET /history/:id ── record completo ─────────────────────────────────
     const historyMatch = pathname.match(/^\/history\/(.+)$/);
     if (request.method === 'GET' && historyMatch) {
       const id = decodeURIComponent(historyMatch[1]);
@@ -222,7 +250,7 @@ export default {
       }
     }
 
-    // ── POST / ── proxy OpenRouter ────────────────────────────────────────────
+    // ── POST / ── proxy OpenRouter ───────────────────────────────────────────
     if (request.method === 'POST' && (pathname === '/' || pathname === '')) {
       if (!env.OPENROUTER_API_KEY) return jsonResponse({ error: { message: 'Chiave API non configurata.' } }, 500, corsHeaders);
       let body;
@@ -253,7 +281,6 @@ async function updateIndex(kv, record) {
   const meta = metaFromRecord(record);
   const idx  = index.findIndex(m => m.id === meta.id);
   if (idx >= 0) index[idx] = meta; else index.push(meta);
-  // Mantieni max 50 voci, rimuovi le più vecchie
   if (index.length > 50) {
     index.sort((a, b) => a.timestamp - b.timestamp);
     const toDelete = index.splice(0, index.length - 50);
