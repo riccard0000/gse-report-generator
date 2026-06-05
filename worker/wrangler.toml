@@ -2,11 +2,27 @@ name = "gse-proxy"
 main = "index.js"
 compatibility_date = "2024-01-01"
 
-# KV Namespace per configurazione persistente (modelli AI + prompt custom)
-# Per creare: wrangler kv:namespace create GSE_CONFIG
-# Poi sostituire l'id qui sotto con quello restituito dal comando
+# ── KV Namespaces ────────────────────────────────────────────────────────────────────
+# Per creare ciascun namespace:
+#   wrangler kv:namespace create GSE_CONFIG
+#   wrangler kv:namespace create GSE_PROMPT
+#   wrangler kv:namespace create HISTORY
+# Poi sostituire gli id qui sotto con quelli restituiti dai comandi.
+
+# Configurazione modelli AI (primary/fallback)
 [[kv_namespaces]]
 binding = "GSE_CONFIG"
-id      = "SOSTITUIRE_CON_ID_REALE"  # wrangler kv:namespace create GSE_CONFIG
+id      = "SOSTITUIRE_CON_ID_REALE"
 
-# Secret (non va nel toml): wrangler secret put OPENROUTER_API_KEY
+# Prompt custom (estrazione + narrativa)
+[[kv_namespaces]]
+binding = "GSE_PROMPT"
+id      = "SOSTITUIRE_CON_ID_REALE"
+
+# Storico estrazioni (step extracted + confirmed)
+[[kv_namespaces]]
+binding = "HISTORY"
+id      = "SOSTITUIRE_CON_ID_REALE"
+
+# ── Secret (non va nel toml) ──────────────────────────────────────────────────────────────────
+# wrangler secret put OPENROUTER_API_KEY
