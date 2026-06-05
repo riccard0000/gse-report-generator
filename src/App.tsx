@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { FileUploader } from './components/FileUploader';
 import { ReportViewer } from './components/ReportViewer';
 import { extractDataFromPdfs, generateNarrative } from './aiService';
@@ -6,10 +6,10 @@ import { DataVerification } from './components/DataVerification';
 import { Settings } from './components/Settings';
 import { BrowserDiagnosticsPanel } from './components/BrowserDiagnosticsPanel';
 import { ExtractionHistory } from './components/ExtractionHistory';
-import { ExtractedData, NarrativeData, ExtractionMeta } from './types';
+import { ExtractedData, NarrativeData, ExtractionMeta, ExtractionRecord } from './types';
 import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { ModelConfigProvider, useModelConfig } from './context/ModelConfigContext';
-import { saveExtraction } from './lib/extractionStorage';
+import { saveExtractionStep1, saveExtractionStep2 } from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
   Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
@@ -34,6 +34,9 @@ function AppInner() {
   const [sidebarOpen,    setSidebarOpen]    = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
+  // id KV del record corrente — usato per lo step 2 (conferma)
+  const currentHistoryId = useRef<string | null>(null);
+
   const navigate = (p: Page) => { setPage(p); setSidebarOpen(false); };
 
   const handleAnalyze = useCallback(async () => {
@@ -43,6 +46,7 @@ function AppInner() {
     setAppState('extracting');
     setExtractedData(null);
     setNarrativeData(null);
+    currentHistoryId.current = null;
     try {
       const extracted = await extractDataFromPdfs(
         files,
@@ -51,8 +55,10 @@ function AppInner() {
       );
       setExtractedData(extracted);
       setAppState('verifying');
-      // Salva silentemente su KV
-      saveExtraction(extracted, false);
+      // ── STEP 1: salva dati AI grezzi su KV HISTORY (fire-and-forget)
+      saveExtractionStep1(extracted, false).then(id => {
+        currentHistoryId.current = id;
+      });
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante l\'estrazione');
       setAppState('error');
@@ -64,6 +70,7 @@ function AppInner() {
     setIsDemoMode(true);
     setAppState('extracting');
     setProgress('Caricamento PDF di esempio...');
+    currentHistoryId.current = null;
     try {
       const pdfUrls   = getMockPdfUrls();
       const demoFiles = await Promise.all(
@@ -78,6 +85,10 @@ function AppInner() {
       setExtractedData(MOCK_EXTRACTED_DATA);
       setAppState('verifying');
       setProgress('');
+      // ── STEP 1 per modalità demo
+      saveExtractionStep1(MOCK_EXTRACTED_DATA, true).then(id => {
+        currentHistoryId.current = id;
+      });
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore nel caricamento dei PDF demo');
       setAppState('error');
@@ -93,12 +104,19 @@ function AppInner() {
     setError(null);
     setProgress('');
     setIsDemoMode(false);
+    currentHistoryId.current = null;
   };
 
   const handleApprove = useCallback(async (finalData: ExtractedData) => {
     try {
       setAppState('generating');
       setProgress('Generazione del report in corso...');
+
+      // ── STEP 2: salva dati confermati su KV HISTORY (fire-and-forget)
+      if (currentHistoryId.current) {
+        saveExtractionStep2(currentHistoryId.current, finalData, isDemoMode);
+      }
+
       let narrative: NarrativeData;
       if (isDemoMode) {
         await new Promise((r) => setTimeout(r, 800));
@@ -118,24 +136,32 @@ function AppInner() {
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  // ── Ricarica da storico ────────────────────────────────────────────────────
+  // ── Ricarica da storico ──────────────────────────────────────────────────
   const handleLoadFromHistory = useCallback(async (
-    data: ExtractedData,
+    record: ExtractionRecord,
     meta: ExtractionMeta,
   ) => {
     setHistorySidebarOpen(false);
     setError(null);
     setNarrativeData(null);
     setIsDemoMode(meta.isDemoMode);
-    setProgress('Caricamento PDF dallo storico...');
+    setProgress('Caricamento dallo storico...');
     setAppState('extracting');
     setPage('home');
+    currentHistoryId.current = record.id;
 
-    // Tenta di ricaricare i PDF dai nomi file presenti in data
-    const fileNames = (data.yearsData ?? []).map(y => y.sourceFileName).filter(Boolean) as string[];
+    // Usa confirmedData se disponibile, altrimenti extractedData
+    const dataToLoad = record.confirmedData ?? record.extractedData;
+    if (!dataToLoad) {
+      setError('Record storico vuoto.');
+      setAppState('error');
+      return;
+    }
+
+    // Tenta di ricaricare i PDF
+    const fileNames = (dataToLoad.yearsData ?? []).map(y => y.sourceFileName).filter(Boolean) as string[];
     if (fileNames.length > 0) {
       try {
-        // Prova a scaricare i PDF dalla stessa base URL usata dai mock demo
         const rawBase = (import.meta.env.BASE_URL ?? '/') as string;
         const base    = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
         const loaded  = await Promise.all(
@@ -149,14 +175,13 @@ function AppInner() {
         );
         setFiles(loaded);
       } catch {
-        // PDF non disponibili — continua senza file (viewer mostrerà placeholder)
         setFiles([]);
       }
     } else {
       setFiles([]);
     }
 
-    setExtractedData(data);
+    setExtractedData(dataToLoad);
     setAppState('verifying');
     setProgress('');
   }, []);
@@ -172,21 +197,15 @@ function AppInner() {
   ];
 
   const PAGE_TITLES: Record<Page, { title: string; subtitle: string }> = {
-    home:        { title: 'GSE Report Generator',  subtitle: 'Istruttoria Extraprofitti \u00b7 art. 15-bis D.L. 4/2022' },
-    diagnostics: { title: 'Diagnostica Browser',   subtitle: 'Verifica autonoma della catena app \u2192 proxy \u2192 PDF' },
+    home:        { title: 'GSE Report Generator',  subtitle: 'Istruttoria Extraprofitti · art. 15-bis D.L. 4/2022' },
+    diagnostics: { title: 'Diagnostica Browser',   subtitle: 'Verifica autonoma della catena app → proxy → PDF' },
     settings:    { title: 'Impostazioni',           subtitle: 'Configurazione modelli AI e prompt' },
   };
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
-      {/* Overlay mobile nav */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
-      )}
-      {/* Overlay storico mobile */}
-      {historySidebarOpen && (
-        <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setHistorySidebarOpen(false)} />
-      )}
+      {sidebarOpen        && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+      {historySidebarOpen && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setHistorySidebarOpen(false)} />}
 
       {/* Sidebar sinistra — navigazione */}
       <aside className={`fixed top-0 left-0 h-full z-30 bg-white border-r border-slate-200 shadow-lg flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-52' : 'w-14'} lg:static lg:shadow-none`}>
@@ -253,7 +272,6 @@ function AppInner() {
                   <FlaskConical className="w-3.5 h-3.5" /> DEMO — GEOSOL 2022-2024
                 </span>
               )}
-              {/* Bottone storico — sempre visibile in home */}
               {page === 'home' && (
                 <button
                   onClick={() => setHistorySidebarOpen(true)}

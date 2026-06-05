@@ -138,12 +138,36 @@ export interface HighlightInfo {
   id: string;
 }
 
-/** Metadata di una singola estrazione salvata su KV — usato nella sidebar storico */
+/**
+ * ExtractionMeta — metadata leggero usato nell'indice storico (KV HISTORY → history_index).
+ * Non contiene i payload completi, solo i campi necessari per la lista.
+ */
 export interface ExtractionMeta {
   id: string;
   timestamp: number;
+  /** 'extracted' = solo dati AI grezzi | 'confirmed' = dati verificati dall'utente presenti */
+  step: 'extracted' | 'confirmed';
   companyName: string;
   vatNumber: string;
   years: string[];
   isDemoMode: boolean;
+}
+
+/**
+ * ExtractionRecord — record completo salvato su KV HISTORY.
+ *
+ * extractedData  — dati AI grezzi (presenti dal step 1)
+ * confirmedData  — dati verificati/corretti dall'utente (presenti dal step 2, null prima)
+ *
+ * Per ricaricare il flusso:
+ *   - Se confirmedData != null → carica confirmedData in DataVerification
+ *   - Altrimenti              → carica extractedData in DataVerification
+ */
+export interface ExtractionRecord {
+  id: string;
+  timestamp: number;
+  step: 'extracted' | 'confirmed';
+  isDemoMode: boolean;
+  extractedData:  ExtractedData | null;
+  confirmedData:  ExtractedData | null;
 }

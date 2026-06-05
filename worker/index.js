@@ -3,18 +3,22 @@
  *
  * ROTTE:
  *   POST /           — proxy chiamata OpenRouter (chat completions)
- *   GET  /config     — legge modelli + prompt custom da KV
- *   POST /config     — salva modelli + prompt custom su KV
+ *   GET  /config     — legge modelli + prompt custom da KV GSE_CONFIG
+ *   POST /config     — salva modelli + prompt custom su KV GSE_CONFIG
  *   GET  /models     — lista modelli free da OpenRouter
- *   GET  /extractions       — lista storico estrazioni (metadata)
- *   POST /extractions       — salva nuova estrazione
- *   GET  /extractions/:id   — restituisce estrazione completa per id
+ *
+ *   POST /history            — crea o aggiorna un record nello storico (KV HISTORY)
+ *                              body: { id?, step, extractedData?, confirmedData?, isDemoMode? }
+ *                              step = 'extracted' | 'confirmed'
+ *                              Se id è fornito → aggiorna record esistente (step confirmed)
+ *                              Se id mancante  → crea nuovo record (step extracted)
+ *   GET  /history            — lista metadata (ExtractionMeta[]) ordinata per timestamp desc
+ *   GET  /history/:id        — record completo (ExtractionRecord)
  *   OPTIONS *        — preflight CORS
  *
- * KV NAMESPACE: GSE_CONFIG (binding "GSE_CONFIG" in wrangler.toml)
- * KEY config:       "app_config"
- * KEY estrazioni:   "extraction:{timestamp}:{vatNumber}"  (valore = JSON completo)
- * KEY indice:       "extractions_index"  (valore = JSON array di ExtractionMeta)
+ * KV NAMESPACE BINDINGS (wrangler.toml):
+ *   GSE_CONFIG  → configurazione app (modelli, prompt)
+ *   HISTORY     → storico estrazioni
  */
 
 const ALLOWED_ORIGINS = [
@@ -26,7 +30,7 @@ const ALLOWED_ORIGINS = [
 const OPENROUTER_URL        = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_MODELS_URL  = 'https://openrouter.ai/api/v1/models';
 const KV_CONFIG_KEY          = 'app_config';
-const KV_EXTRACTIONS_INDEX   = 'extractions_index';
+const KV_HISTORY_INDEX       = 'history_index';
 
 function getCorsHeaders(origin) {
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -45,6 +49,20 @@ function jsonResponse(data, status = 200, corsHeaders = {}) {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+/** Ricava ExtractionMeta da un ExtractionRecord */
+function metaFromRecord(record) {
+  const ed = record.extractedData ?? record.confirmedData ?? null;
+  return {
+    id:          record.id,
+    timestamp:   record.timestamp,
+    step:        record.step,
+    companyName: ed?.companyName?.value  ?? '',
+    vatNumber:   ed?.vatNumber?.value    ?? '',
+    years:       (ed?.yearsData ?? []).map(y => y.year),
+    isDemoMode:  record.isDemoMode ?? false,
+  };
 }
 
 export default {
@@ -117,13 +135,12 @@ export default {
       }
     }
 
-    // ── GET /extractions — lista metadata ────────────────────────────────
-    if (request.method === 'GET' && pathname === '/extractions') {
-      if (!env.GSE_CONFIG) return jsonResponse([], 200, corsHeaders);
+    // ── GET /history — lista metadata ────────────────────────────────────
+    if (request.method === 'GET' && pathname === '/history') {
+      if (!env.HISTORY) return jsonResponse([], 200, corsHeaders);
       try {
-        const raw   = await env.GSE_CONFIG.get(KV_EXTRACTIONS_INDEX);
+        const raw   = await env.HISTORY.get(KV_HISTORY_INDEX);
         const index = raw ? JSON.parse(raw) : [];
-        // Ordine cronologico inverso (più recente prima)
         index.sort((a, b) => b.timestamp - a.timestamp);
         return jsonResponse(index, 200, corsHeaders);
       } catch {
@@ -131,67 +148,74 @@ export default {
       }
     }
 
-    // ── POST /extractions — salva estrazione ─────────────────────────────
-    if (request.method === 'POST' && pathname === '/extractions') {
-      if (!env.GSE_CONFIG) {
-        return jsonResponse({ error: 'KV namespace GSE_CONFIG non configurato.' }, 500, corsHeaders);
+    // ── POST /history — crea o aggiorna record ───────────────────────────
+    if (request.method === 'POST' && pathname === '/history') {
+      if (!env.HISTORY) {
+        return jsonResponse({ error: 'KV namespace HISTORY non configurato.' }, 500, corsHeaders);
       }
       let body;
       try { body = await request.json(); }
       catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
 
-      const { extractedData, isDemoMode } = body;
-      if (!extractedData) {
-        return jsonResponse({ error: 'Campo extractedData mancante.' }, 400, corsHeaders);
+      const { id: existingId, step, extractedData, confirmedData, isDemoMode } = body;
+
+      if (!step || !['extracted', 'confirmed'].includes(step)) {
+        return jsonResponse({ error: 'Campo step mancante o invalido (extracted | confirmed).' }, 400, corsHeaders);
       }
 
-      const timestamp = Date.now();
-      const vatNumber = extractedData.vatNumber?.value ?? 'unknown';
-      const id        = `extraction:${timestamp}:${vatNumber}`;
-
-      // Metadata per l'indice
-      const meta = {
-        id,
-        timestamp,
-        companyName:  extractedData.companyName?.value  ?? '',
-        vatNumber:    vatNumber,
-        years:        (extractedData.yearsData ?? []).map(y => y.year),
-        isDemoMode:   isDemoMode ?? false,
-      };
-
       try {
-        // Salva il payload completo
-        await env.GSE_CONFIG.put(id, JSON.stringify(extractedData));
+        let record;
 
-        // Aggiorna l'indice
-        let index = [];
-        try {
-          const rawIdx = await env.GSE_CONFIG.get(KV_EXTRACTIONS_INDEX);
-          if (rawIdx) index = JSON.parse(rawIdx);
-        } catch { /**/ }
-        index.push(meta);
-        // Mantieni max 50 voci
-        if (index.length > 50) {
-          index.sort((a, b) => a.timestamp - b.timestamp);
-          const toDelete = index.splice(0, index.length - 50);
-          await Promise.all(toDelete.map(m => env.GSE_CONFIG.delete(m.id)));
+        if (step === 'extracted') {
+          // ── STEP 1: nuova estrazione AI grezzo ─────────────────────────
+          if (!extractedData) {
+            return jsonResponse({ error: 'Campo extractedData mancante per step=extracted.' }, 400, corsHeaders);
+          }
+          const timestamp = Date.now();
+          const vatNumber = extractedData.vatNumber?.value ?? 'unknown';
+          const id        = `history:${timestamp}:${vatNumber}`;
+          record = { id, timestamp, step: 'extracted', isDemoMode: isDemoMode ?? false, extractedData, confirmedData: null };
+          await env.HISTORY.put(id, JSON.stringify(record));
+          await updateIndex(env.HISTORY, record);
+          return jsonResponse({ ok: true, id }, 200, corsHeaders);
+
+        } else {
+          // ── STEP 2: dati confermati dall'utente ────────────────────────
+          if (!confirmedData) {
+            return jsonResponse({ error: 'Campo confirmedData mancante per step=confirmed.' }, 400, corsHeaders);
+          }
+          if (!existingId) {
+            return jsonResponse({ error: 'Campo id mancante per step=confirmed.' }, 400, corsHeaders);
+          }
+          // Carica record esistente e aggiunge confirmedData
+          const raw = await env.HISTORY.get(existingId);
+          if (raw) {
+            record = JSON.parse(raw);
+          } else {
+            // Record non trovato (es. TTL scaduto) — ricrea
+            const timestamp = Date.now();
+            const vatNumber = confirmedData.vatNumber?.value ?? 'unknown';
+            record = { id: existingId, timestamp, step: 'extracted', isDemoMode: isDemoMode ?? false, extractedData: null, confirmedData: null };
+          }
+          record.step          = 'confirmed';
+          record.confirmedData = confirmedData;
+          await env.HISTORY.put(record.id, JSON.stringify(record));
+          await updateIndex(env.HISTORY, record);
+          return jsonResponse({ ok: true, id: record.id }, 200, corsHeaders);
         }
-        await env.GSE_CONFIG.put(KV_EXTRACTIONS_INDEX, JSON.stringify(index));
-
-        return jsonResponse({ ok: true, id }, 200, corsHeaders);
       } catch (e) {
         return jsonResponse({ error: String(e) }, 500, corsHeaders);
       }
     }
 
-    // ── GET /extractions/:id — estrazione completa ────────────────────────
-    const extractionMatch = pathname.match(/^\/extractions\/(.+)$/);
-    if (request.method === 'GET' && extractionMatch) {
-      const id = decodeURIComponent(extractionMatch[1]);
-      if (!env.GSE_CONFIG) return jsonResponse({ error: 'KV non configurato.' }, 500, corsHeaders);
+    // ── GET /history/:id — record completo ────────────────────────────────
+    const historyMatch = pathname.match(/^\/history\/(.+)$/);
+    if (request.method === 'GET' && historyMatch) {
+      const id = decodeURIComponent(historyMatch[1]);
+      if (!env.HISTORY) return jsonResponse({ error: 'KV HISTORY non configurato.' }, 500, corsHeaders);
       try {
-        const raw = await env.GSE_CONFIG.get(id);
-        if (!raw) return jsonResponse({ error: 'Estrazione non trovata.' }, 404, corsHeaders);
+        const raw = await env.HISTORY.get(id);
+        if (!raw) return jsonResponse({ error: 'Record non trovato.' }, 404, corsHeaders);
         return jsonResponse(JSON.parse(raw), 200, corsHeaders);
       } catch (e) {
         return jsonResponse({ error: String(e) }, 500, corsHeaders);
@@ -227,3 +251,29 @@ export default {
     return new Response('Not Found', { status: 404, headers: corsHeaders });
   },
 };
+
+// ── Helper: aggiorna l'indice KV_HISTORY_INDEX ───────────────────────────────
+async function updateIndex(kv, record) {
+  let index = [];
+  try {
+    const rawIdx = await kv.get(KV_HISTORY_INDEX);
+    if (rawIdx) index = JSON.parse(rawIdx);
+  } catch { /**/ }
+
+  const meta  = metaFromRecord(record);
+  const idx   = index.findIndex(m => m.id === meta.id);
+  if (idx >= 0) {
+    index[idx] = meta;   // aggiorna voce esistente
+  } else {
+    index.push(meta);    // nuova voce
+  }
+
+  // Mantieni max 50 voci (rimuovi le più vecchie)
+  if (index.length > 50) {
+    index.sort((a, b) => a.timestamp - b.timestamp);
+    const toDelete = index.splice(0, index.length - 50);
+    await Promise.all(toDelete.map(m => kv.delete(m.id)));
+  }
+
+  await kv.put(KV_HISTORY_INDEX, JSON.stringify(index));
+}
