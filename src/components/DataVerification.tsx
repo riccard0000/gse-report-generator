@@ -95,8 +95,8 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
     : src
         .replace(/[\t]/g, ' ')
         // spazio lettera→cifra e cifra→lettera (non cifra→cifra)
-        .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
-        .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
+        .replace(/([A-Za-z\u00c0-\u00ff)])(\\d)/g, '$1 $2')
+        .replace(/(\\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
         .replace(/\s{2,}/g, ' ')
         .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
@@ -335,6 +335,53 @@ async function findBboxForField(
   }
 }
 
+/**
+ * Cerca la bbox di un testo libero (fonteTestuale della checklist)
+ * su una pagina del PDF. Usa match per sottostringa su tutti i token.
+ */
+async function findBboxForFreeText(
+  pdf: pdfjsLib.PDFDocumentProxy,
+  pageNum: number,
+  text: string,
+): Promise<BBox[]> {
+  try {
+    const page    = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const items   = content.items as PdfTextItem[];
+
+    // Prende le prime 6 parole significative come query
+    const words = text
+      .toLowerCase()
+      .replace(/[^\w\u00c0-\u00ff\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 4)
+      .slice(0, 6);
+
+    if (words.length === 0) return [];
+
+    const threshold = Math.max(1, Math.ceil(words.length * 0.5));
+    const matched: PdfTextItem[] = [];
+    for (const item of items) {
+      const txt   = item.str.toLowerCase();
+      const count = words.filter(w => txt.includes(w)).length;
+      if (count >= threshold) matched.push(item);
+    }
+
+    if (matched.length === 0) {
+      // fallback: primo token che contiene la prima parola chiave
+      const fb = items.find(it => it.str.toLowerCase().includes(words[0]));
+      if (fb) matched.push(fb);
+    }
+
+    return matched.slice(0, 3).map(it => {
+      const tf = it.transform;
+      return { x0: tf[4], y0: tf[5], x1: tf[4] + it.width, y1: tf[5] + it.height };
+    });
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NumericInput
 // ---------------------------------------------------------------------------
@@ -373,8 +420,9 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
 // ---------------------------------------------------------------------------
 // Colori highlight
 // ---------------------------------------------------------------------------
-const HIGHLIGHT_LABEL_COLOR = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
-const HIGHLIGHT_VALUE_COLOR = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
+const HIGHLIGHT_LABEL_COLOR    = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
+const HIGHLIGHT_VALUE_COLOR    = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
+const HIGHLIGHT_CHECKLIST_COLOR = { bg: 'rgba(239,68,68,0.18)',   border: 'rgba(239,68,68,0.85)' };
 
 interface ActiveHighlight {
   page:         number;
@@ -382,6 +430,7 @@ interface ActiveHighlight {
   segmentNames: string[];
   color:        string;
   isMultiSum:   boolean;
+  isChecklist?: boolean;
 }
 
 const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -423,7 +472,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
     hl.bboxes.forEach((bbox, idx) => {
       if (isBboxEmpty(bbox)) return;
-      const colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
+      const colors = hl.isChecklist
+        ? HIGHLIGHT_CHECKLIST_COLOR
+        : idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
       const dpr = window.devicePixelRatio || 1;
@@ -575,6 +626,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
+    if (highlight.isChecklist) {
+      return [{ color: HIGHLIGHT_CHECKLIST_COLOR.border, name: 'Fonte checklist' }];
+    }
     const items = [];
     if (visibleBboxes[0]) items.push({ color: HIGHLIGHT_LABEL_COLOR.border, name: 'Etichetta' });
     if (visibleBboxes[1]) items.push({ color: HIGHLIGHT_VALUE_COLOR.border, name: 'Valore' });
@@ -717,6 +771,44 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
+  /**
+   * Highlight per una voce checklist: usa fonteTestuale come testo libero
+   * e cerca la bbox sulla pagina indicata nel documento del tab attivo.
+   */
+  const handleChecklistClick = useCallback(async (
+    fonteTestuale: string | undefined,
+    page: number | null | undefined,
+    fileIdx: number,
+  ) => {
+    if (!fonteTestuale || !page || !files[fileIdx]) {
+      setActiveHighlight(null);
+      return;
+    }
+
+    // Placeholder immediato per feedback visivo
+    setActiveHighlight({
+      page,
+      bboxes: [EMPTY_BBOX],
+      segmentNames: [],
+      color: 'rgba(239,68,68,0.35)',
+      isMultiSum: false,
+      isChecklist: true,
+    });
+
+    try {
+      const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
+      const bboxes = await findBboxForFreeText(doc, page, fonteTestuale);
+      setActiveHighlight({
+        page,
+        bboxes: bboxes.length > 0 ? bboxes : [EMPTY_BBOX],
+        segmentNames: [],
+        color: 'rgba(239,68,68,0.35)',
+        isMultiSum: false,
+        isChecklist: true,
+      });
+    } catch { /**/ }
+  }, [files, getPdfDoc]);
+
   const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
@@ -838,20 +930,35 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                     <span className="text-xs font-bold text-indigo-700 uppercase tracking-wide">Checklist GSE / Extraprofitti</span>
                   </div>
                   <p className="text-[10px] text-slate-400 mb-3 leading-relaxed">
-                    Voci ricercate nel documento dal modello AI. La fonte testuale riporta la citazione letterale trovata nel PDF.
+                    Voci ricercate nel documento dal modello AI. Clicca su una voce per evidenziare la fonte nel PDF.
                   </p>
                   <div className="space-y-3">
                     {CHECKLIST_LABELS.map(({ key, label }) => {
                       const item       = checklist[key];
                       const isPres     = item?.presente;
+                      const hasSource  = !!(item?.fonteTestuale && item.page);
                       const badgeBg    = isPres ? 'bg-red-50 border-red-200'   : 'bg-emerald-50 border-emerald-200';
                       const badgeText  = isPres ? 'text-red-700'               : 'text-emerald-700';
                       const badgeLabel = isPres ? '\u26a0 Presente'            : '\u2713 Assente';
                       return (
-                        <div key={key} className={`rounded-lg border p-3 ${badgeBg}`}>
+                        <div
+                          key={key}
+                          className={`rounded-lg border p-3 ${badgeBg} ${hasSource ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`}
+                          onClick={() => {
+                            if (hasSource) handleChecklistClick(item.fonteTestuale, item.page, yearIdx);
+                          }}
+                          title={hasSource ? 'Clicca per evidenziare nel PDF' : undefined}
+                        >
                           <div className="flex items-start justify-between gap-2 mb-1">
                             <span className="text-[10px] font-bold text-slate-600 leading-tight">{label}</span>
-                            <span className={`text-[10px] font-bold whitespace-nowrap ${badgeText}`}>{badgeLabel}</span>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {hasSource && (
+                                <span className="text-[9px] font-medium text-indigo-500 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5 flex items-center gap-0.5">
+                                  <FileSearch className="w-2 h-2" /> p.{item.page}
+                                </span>
+                              )}
+                              <span className={`text-[10px] font-bold whitespace-nowrap ${badgeText}`}>{badgeLabel}</span>
+                            </div>
                           </div>
                           {item?.dettaglio && <p className="text-[10px] text-slate-500 mb-1.5 leading-relaxed">{item.dettaglio}</p>}
                           {item?.fonteTestuale && (
