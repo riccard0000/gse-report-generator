@@ -15,7 +15,11 @@
  *              DEVE corrispondere ESATTAMENTE a una stringa presente nel PDF.
  *              MAI testo descrittivo/inventato → il viewer lo cercherebbe nel PDF.
  *              Se il campo non ha riga diretta nel PDF → usare DerivedField.
+ *              Per campi multi-riga (debitiTributari, debitiPrevidenziali):
+ *              rawLabel = prefisso comune a TUTTE le righe ('Erario', 'INPS').
+ *              Il viewer evidenzierà TUTTE le occorrenze e mostrerà la somma.
  *   rawText  — riga COMPLETA verbatim con tab e tutti i numeri.
+ *              Per campi multi-riga: tutte le righe concatenate con '\n'.
  *              DEVE essere copiata letter-for-letter dal testo grezzo del PDF.
  *              MAI testo descrittivo/calcolato — stessa regola di rawLabel.
  *              null se il campo non è presente come riga nel PDF.
@@ -139,8 +143,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t449.155\t389.360",
       },
-      // FIX Bug 2: rawLabel era 'esigibili entro...' (troppo corta e ambigua)
-      // Sostituita con l'etichetta completa del totale debiti correnti
       passivitaCorrenti: {
         value: 864978,
         page: 3,
@@ -153,8 +155,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "IV - Disponibilità liquide",
         rawText:  "IV - Disponibilità liquide\t254.282\t259.343",
       },
-      // FIX Bug 2: rawLabel era identica a passivitaCorrenti → match errato
-      // Sostituita con l'etichetta specifica dei crediti
       creditiEntro12Mesi: {
         value: 194873,
         page: 3,
@@ -187,17 +187,23 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
+      // MULTI-RIGA: tutte le voci Erario della nota integrativa p.11
+      // Valore = somma consist.finale colonna 2022 (980+159 → vedi INPS sotto)
+      // Erario: c/IRES=0, c/acconti IRES=31.561, c/acconti IRAP=10.715, c/IRAP=0
+      // + voci troncate (c/riten, c/rit.aut, c/imposte TFR, imposta TFR)
+      // Totale confermato = 56.797 dal mock originale
       debitiTributari: {
         value: 56797,
         page: 11,
         rawLabel: "Erario",
-        rawText:  null,
+        rawText:  "Erario c/riten.su redd.lav.dipend.e assi\nErario c/rit.redd.lav.aut.,agenti,rappr.\nErario c/imposte sostitutive su TFR\nErario imposta sostitutiva su TFR\nErario c/IRES\t7.747\t-\t7.747-\t100-\nErario c/acconti IRES\t33.323\t31.561\t1.762-\t6-\nErario c/acconti IRAP\t-\t10.715\t10.715\t100\nErario c/IRAP\t5.737\t-\t5.737-\t-",
       },
+      // MULTI-RIGA: INPS + INAIL — consist.finale 2022
       debitiPrevidenziali: {
         value: 1139,
         page: 11,
-        rawLabel: "INPS dipendenti",
-        rawText:  null,
+        rawLabel: "INPS",
+        rawText:  "INPS dipendenti\t14.490\t980\t13.510-\t94-\nINAIL dipendenti/collaboratori\t167\t159\t8-\t1-",
       },
 
       ebitda: { value: null, formula: null },
@@ -306,17 +312,22 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
+      // MULTI-RIGA: voci Erario nota p.12 — consist.finale 2023
+      // c/imposte TFR=0, imposta TFR=491, c/acconti IRES=0, c/acconti IRAP=0, c/IRES=19.900
+      // + voci troncate (c/riten, c/rit.aut)
+      // Totale = 24.568 (confermato)
       debitiTributari: {
         value: 24568,
         page: 12,
         rawLabel: "Erario",
-        rawText:  null,
+        rawText:  "Erario c/riten.su redd.lav.dipend.e\nErario c/rit.redd.lav.aut.,agenti,\nErario c/imposte sostitutive su TFR\t131\t-\t-131\t-100,00%\nErario imposta sostitutiva su TFR\t491\t491\t-\t-\nErario c/acconti IRES\t31.561\t-\t-31.561\t-100,00%\nErario c/acconti IRAP\t10.715\t-10.715\t-100,00%\nErario c/IRES\t-\t19.900\t19.900\t100,00%",
       },
+      // MULTI-RIGA: INPS + INAIL — consist.finale 2023
       debitiPrevidenziali: {
         value: 1965,
         page: 12,
-        rawLabel: "INPS dipendenti",
-        rawText:  null,
+        rawLabel: "INPS",
+        rawText:  "INPS dipendenti\t980\t1809\t829\t45,83%\nINAIL dipendenti/collaboratori\t159\t156\t-3\t-1,89%",
       },
 
       ebitda: { value: null, formula: null },
@@ -425,17 +436,21 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
+      // MULTI-RIGA: voci Erario nota p.13 — consist.finale 2024
+      // c/riten=1.096, c/rit.aut=3.433, imposta TFR=508, c/IRES=7.574
+      // Totale = 12.611
       debitiTributari: {
         value: 12611,
         page: 13,
         rawLabel: "Erario",
-        rawText:  null,
+        rawText:  "Erario c/riten.su redd.lav.dipend.e assi\t1.265\t1.096\t-169\t-15,42%\nErario c/rit.redd.lav.aut.,agenti,rappr.\t2.912\t3.433\t521\t15,18%\nErario imposta sostitutiva su TFR\t491\t508\t17\t3,46%\nErario c/IRES\t19.900\t7.574\t-12.326\t-61,94%",
       },
+      // MULTI-RIGA: INPS + INAIL — consist.finale 2024
       debitiPrevidenziali: {
         value: 2287,
         page: 13,
-        rawLabel: "INPS dipendenti",
-        rawText:  null,
+        rawLabel: "INPS",
+        rawText:  "INPS dipendenti\t1.809\t2.108\t299\t14,18%\nINAIL dipendenti/collaboratori\t156\t179\t23\t12,85%",
       },
 
       ebitda: { value: null, formula: null },
@@ -443,8 +458,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
   ],
 
   checklist: {
-    // FIX Bug 1: page era 0 (falsy) → handleChecklistClick usciva subito.
-    // Sostituito con null su tutti i campi checklist senza fonte reale.
     debitiGSE:       { presente: false, dettaglio: "Nessun debito verso GSE iscritto nello stato patrimoniale negli esercizi 2022-2024.", fonteTestuale: null, page: null, sourceFileName: null },
     accantonamenti:  { presente: false, dettaglio: "Nessun accantonamento a fondo rischi collegato a extraprofitti o art. 15-bis D.L. 4/2022 rilevato nella nota integrativa.", fonteTestuale: null, page: null, sourceFileName: null },
     riduzioniRicavi: { presente: false, dettaglio: "Nessuna riduzione di ricavi per effetto della normativa sugli extraprofitti rilevata nel conto economico.", fonteTestuale: null, page: null, sourceFileName: null },

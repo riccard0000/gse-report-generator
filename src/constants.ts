@@ -36,9 +36,45 @@ Mappe voci di bilancio (schema italiano CE/SP):
 - "rimanenze" = I - Rimanenze (attivo circolante)
 - "attivoCircolante" = Totale attivo circolante (C) SP
 - "passivitaCorrenti" = Totale debiti esigibili entro l'esercizio (SP)
-- "debitiTributari" = debiti tributari SP o nota integrativa
-- "debitiPrevidenziali" = debiti previdenziali/INPS/INAIL SP o nota integrativa
+- "debitiTributari" = debiti tributari verso l'Erario (vedi regola MULTI-RIGA sotto)
+- "debitiPrevidenziali" = debiti previdenziali verso INPS/INAIL (vedi regola MULTI-RIGA sotto)
 - "fondoRischiOneri" = B) Fondi per rischi e oneri SP
+
+REGOLA PRIORITÀ SP → NOTA per debitiTributari e debitiPrevidenziali:
+  1. PRIMA cerca nello Stato Patrimoniale (SP) una riga aggregata con etichette come:
+     "12) Debiti tributari", "Debiti tributari", "13) Debiti previdenziali e sociali", "Debiti previdenziali".
+     Se la trovi: usa quel singolo valore, imposta page = pagina SP, rawLabel = etichetta esatta,
+     rawText = riga completa verbatim. FINE — non andare nella nota.
+  2. SOLO SE lo SP non ha una riga aggregata separata per questi debiti
+     (caso bilancio abbreviato dove compaiono solo nel totale D), vai alla nota integrativa
+     e applica la REGOLA MULTI-RIGA descritta sotto.
+
+REGOLA MULTI-RIGA (nota integrativa — solo se non trovato in SP):
+  Questa regola si applica a debitiTributari e debitiPrevidenziali quando il dettaglio
+  è esposto solo nella nota integrativa come tabella con più voci (es. sezione "Debiti").
+
+  Per "debitiTributari":
+  - Individua TUTTE le righe che iniziano con "Erario" nella sezione debiti della nota.
+  - Somma i valori della colonna CONSISTENZA FINALE (anno corrente) di tutte le righe.
+    Ignora i trattini ("-") come zero. Ignora righe che non hanno numeri (troncate).
+  - "value" = somma totale calcolata
+  - "page" = pagina della nota integrativa dove si trovano le righe
+  - "rawLabel" = "Erario" (prefisso comune — il viewer evidenzierà TUTTE le occorrenze)
+  - "rawText" = concatenazione di TUTTE le righe Erario trovate, separate da \n,
+    ognuna nel formato verbatim con tab: es.
+    "Erario c/riten.su redd.lav.dipend.e assi\t1.265\t1.096\t-169\t-15,42%\nErario c/IRES\t19.900\t7.574\t-12.326\t-61,94%"
+    Per righe il cui nome è troncato su riga successiva (senza numeri), includile ugualmente.
+
+  Per "debitiPrevidenziali":
+  - Individua TUTTE le righe che iniziano con "INPS" o "INAIL" nella sezione debiti.
+  - Stessa logica di somma e formato rawText.
+  - "rawLabel" = "INPS" (prefisso comune)
+
+  REGOLA CRITICA per la colonna da sommare:
+  La tabella nota debiti ha tipicamente 4 colonne:
+  [Descrizione] [Consist.iniziale] [Consist.finale] [Variaz.assoluta] [Variaz.%]
+  Devi sommare SEMPRE la colonna CONSIST.FINALE (seconda colonna numerica = anno corrente).
+  NON sommare la colonna Consist.iniziale (anno precedente).
 
 Per ciascun valore numerico includi SEMPRE questi 4 campi:
 - "value": numero intero corrispondente all'anno di riferimento di QUESTO documento.
@@ -49,12 +85,14 @@ Per ciascun valore numerico includi SEMPRE questi 4 campi:
 - "rawText": copia LETTERALE della riga completa del documento, esattamente come appare
   nel testo fornito, inclusi separatori \t e TUTTI i numeri sulla riga
   (sia anno corrente che anno precedente se entrambi presenti).
+  Per campi MULTI-RIGA: concatenazione di tutte le righe separate da \n (vedi sopra).
   NON normalizzare spazi, NON rimuovere tabulazioni, NON parafrasare.
-  Esempio: "Totale valore della produzione\t818.547\t778.956"
+  Esempio riga singola: "Totale valore della produzione\t818.547\t778.956"
 - "rawLabel": copia LETTERALE del solo testo dell'etichetta/voce, esattamente come
   appare nel documento. Preserva maiuscole, minuscole, caratteri accentati italiani
   (à, è, é, ì, ò, ù), apostrofi e parentesi alfabetiche.
   REGOLA: nessuna cifra, nessun separatore numerico (. , -), nessun tab.
+  Per campi MULTI-RIGA: usa il prefisso comune ("Erario", "INPS").
   Questo campo è usato dal sistema per localizzare la riga nel PDF visualizzato:
   una copia imprecisa impedisce l'evidenziazione automatica nel viewer.
   Esempi CORRETTI:
