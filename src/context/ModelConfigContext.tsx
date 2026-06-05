@@ -22,14 +22,17 @@ const DEFAULT_PROMPT_CUSTOM: PromptCustom = {
 };
 
 interface ModelConfigCtx {
-  config:         ModelConfig;
-  setConfig:      (c: ModelConfig) => void;
-  promptCustom:   PromptCustom;
-  setPromptCustom:(p: PromptCustom) => void;
-  saveConfig:     () => Promise<void>;
-  saving:         boolean;
-  saved:          boolean;
-  loadError:      string | null;
+  config:          ModelConfig;
+  setConfig:       (c: ModelConfig) => void;
+  promptCustom:    PromptCustom;
+  setPromptCustom: (p: PromptCustom) => void;
+  saveModels:      () => Promise<void>;
+  savePrompts:     () => Promise<void>;
+  /** @deprecated usa saveModels + savePrompts separatamente */
+  saveConfig:      () => Promise<void>;
+  saving:          boolean;
+  saved:           boolean;
+  loadError:       string | null;
 }
 
 const Ctx = createContext<ModelConfigCtx>({
@@ -37,6 +40,8 @@ const Ctx = createContext<ModelConfigCtx>({
   setConfig:       () => {},
   promptCustom:    DEFAULT_PROMPT_CUSTOM,
   setPromptCustom: () => {},
+  saveModels:      async () => {},
+  savePrompts:     async () => {},
   saveConfig:      async () => {},
   saving:          false,
   saved:           false,
@@ -45,10 +50,9 @@ const Ctx = createContext<ModelConfigCtx>({
 
 export const useModelConfig = () => useContext(Ctx);
 
-const CONFIG_URL = () => {
-  const base = OPENROUTER_ENDPOINT ?? '';
-  return base.replace(/\/$/, '') + '/config';
-};
+function workerBase() {
+  return (OPENROUTER_ENDPOINT ?? '').replace(/\/$/, '');
+}
 
 export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [config,         setConfig]         = useState<ModelConfig>(DEFAULT_MODEL_CONFIG);
@@ -57,44 +61,85 @@ export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [saved,          setSaved]          = useState(false);
   const [loadError,      setLoadError]      = useState<string | null>(null);
 
-  // Carica configurazione dal Worker KV all'avvio
+  // ── Caricamento all'avvio: modelli da /config, prompt da /prompts ────────────
   useEffect(() => {
-    const url = CONFIG_URL();
-    if (!url || url === '/config') return;
-    fetch(url)
-      .then((r) => r.json())
-      .then((data: { models?: ModelConfig; prompts?: PromptCustom }) => {
-        if (data?.models)  setConfig(data.models);
-        if (data?.prompts) setPromptCustom({
-          extraction: data.prompts.extraction ?? EXTRACTION_PROMPT_CUSTOM_DEFAULT,
-          narrative:  data.prompts.narrative  ?? NARRATIVE_PROMPT_CUSTOM_DEFAULT,
-        });
+    const base = workerBase();
+    if (!base || base === '') return;
+
+    // Modelli
+    fetch(`${base}/config`)
+      .then(r => r.json())
+      .then((data: { models?: ModelConfig }) => {
+        if (data?.models) setConfig(data.models);
       })
-      .catch(() => setLoadError('Impossibile caricare la configurazione dal server.'));
+      .catch(() => setLoadError('Impossibile caricare la configurazione modelli.'));
+
+    // Prompt
+    fetch(`${base}/prompts`)
+      .then(r => r.json())
+      .then((data: Partial<PromptCustom>) => {
+        if (data?.extraction || data?.narrative) {
+          setPromptCustom({
+            extraction: data.extraction ?? EXTRACTION_PROMPT_CUSTOM_DEFAULT,
+            narrative:  data.narrative  ?? NARRATIVE_PROMPT_CUSTOM_DEFAULT,
+          });
+        }
+      })
+      .catch(() => { /* prompt: fallback ai default, non bloccante */ });
   }, []);
 
-  const saveConfig = useCallback(async () => {
-    setSaving(true);
-    setSaved(false);
+  // ── Salva solo modelli su GSE_CONFIG ───────────────────────────────────────
+  const saveModels = useCallback(async () => {
+    const base = workerBase();
+    setSaving(true); setSaved(false);
     try {
-      const url = CONFIG_URL();
-      const res = await fetch(url, {
-        method: 'POST',
+      const res = await fetch(`${base}/config`, {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ models: config, prompts: promptCustom }),
+        body:    JSON.stringify({ models: config }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch {
-      setLoadError('Errore nel salvataggio della configurazione.');
+      setLoadError('Errore nel salvataggio dei modelli.');
     } finally {
       setSaving(false);
     }
-  }, [config, promptCustom]);
+  }, [config]);
+
+  // ── Salva solo prompt su GSE_PROMPT ───────────────────────────────────────
+  const savePrompts = useCallback(async () => {
+    const base = workerBase();
+    setSaving(true); setSaved(false);
+    try {
+      const res = await fetch(`${base}/prompts`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ extraction: promptCustom.extraction, narrative: promptCustom.narrative }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch {
+      setLoadError('Errore nel salvataggio dei prompt.');
+    } finally {
+      setSaving(false);
+    }
+  }, [promptCustom]);
+
+  // saveConfig = compatibilità retroattiva: salva entrambi
+  const saveConfig = useCallback(async () => {
+    await saveModels();
+    await savePrompts();
+  }, [saveModels, savePrompts]);
 
   return (
-    <Ctx.Provider value={{ config, setConfig, promptCustom, setPromptCustom, saveConfig, saving, saved, loadError }}>
+    <Ctx.Provider value={{
+      config, setConfig, promptCustom, setPromptCustom,
+      saveModels, savePrompts, saveConfig,
+      saving, saved, loadError,
+    }}>
       {children}
     </Ctx.Provider>
   );
