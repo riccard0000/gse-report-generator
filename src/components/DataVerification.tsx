@@ -85,20 +85,92 @@ function segmentDisplayName(seg: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cerca un segmento testuale nella pagina
+// Cerca TUTTI i token che corrispondono al segmento testuale.
+// Se fieldValue è fornito, sceglie il candidato la cui riga contiene
+// il numero più vicino al valore atteso — risolvendo il caso di etichette
+// duplicate (es. "Totale debiti" in SP e CE sulla stessa pagina).
+// Restituisce il candidato migliore con la sua bbox.
 // ---------------------------------------------------------------------------
+function findNumericNeighborForItem(
+  items: PdfTextItem[],
+  labelItem: PdfTextItem,
+  fieldValue: number | null | undefined,
+): { numBbox: BBox | null; numericDistance: number } {
+  const labelTf = labelItem.transform;
+  const labelY  = labelTf[5];
+  const labelX1 = labelTf[4] + labelItem.width;
+  const Y_TOL   = 5;
+
+  const sameRow = items.filter(it => {
+    const tf = it.transform;
+    return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
+  });
+  if (sameRow.length === 0) return { numBbox: null, numericDistance: Infinity };
+
+  const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
+  const candidates    = numericTokens.length > 0 ? numericTokens : sameRow;
+
+  if (fieldValue !== null && fieldValue !== undefined) {
+    const absVal = Math.abs(fieldValue);
+    const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
+
+    // Cerca prima il match esatto per valore
+    const byValue = candidates.find(it => {
+      const s = it.str.replace(/[.,\s-]/g, '');
+      return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
+    });
+    if (byValue) {
+      const tf = byValue.transform;
+      return {
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + byValue.width, y1: tf[5] + byValue.height },
+        numericDistance: 0,
+      };
+    }
+
+    // Nessun match esatto: calcola la distanza dal valore atteso per ogni candidato numerico
+    let bestDist = Infinity;
+    let bestItem: PdfTextItem | null = null;
+    for (const it of numericTokens) {
+      const parsed = parseIT(it.str);
+      if (!isNaN(parsed)) {
+        const dist = Math.abs(parsed - absVal);
+        if (dist < bestDist) { bestDist = dist; bestItem = it; }
+      }
+    }
+    if (bestItem) {
+      const tf = bestItem.transform;
+      return {
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height },
+        numericDistance: bestDist,
+      };
+    }
+  }
+
+  // Fallback: token numerico più vicino a destra
+  const closest = candidates.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
+  const tf = closest.transform;
+  return {
+    numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height },
+    numericDistance: Infinity,
+  };
+}
+
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
   segment: string,
+  fieldValue?: number | null,
 ): Promise<{ bbox: BBox; item: PdfTextItem } | null> {
   const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
-  let found: PdfTextItem | null = null;
+  // --- Raccoglie TUTTI i candidati (match esatto prima, poi keyword) ---
+  const exactMatches = items.filter(it =>
+    it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
+  );
 
-  found = items.find(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg) ?? null;
+  let candidates: PdfTextItem[] = exactMatches;
 
-  if (!found) {
+  if (candidates.length === 0) {
     const keywords = seg
       .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
       .split(/\s+/)
@@ -107,22 +179,53 @@ async function findSingleBboxWithItem(
 
     if (keywords.length > 0) {
       const threshold = Math.max(1, Math.ceil(keywords.length / 2));
-      let bestCount = 0;
+      const kwMatches: PdfTextItem[] = [];
       for (const item of items) {
         const txt   = item.str.toLowerCase();
         const count = keywords.filter(w => txt.includes(w)).length;
-        if (count >= threshold && count > bestCount) {
-          found     = item;
-          bestCount = count;
-        }
+        if (count >= threshold) kwMatches.push(item);
       }
-      if (!found) {
-        found = items.find(it => it.str.toLowerCase().includes(keywords[0])) ?? null;
+      candidates = kwMatches;
+
+      // Ultimo fallback: primo keyword
+      if (candidates.length === 0) {
+        candidates = items.filter(it => it.str.toLowerCase().includes(keywords[0]));
       }
     }
   }
 
-  if (!found) return null;
+  if (candidates.length === 0) return null;
+
+  // --- Con un solo candidato non serve discriminare ---
+  if (candidates.length === 1) {
+    const found = candidates[0];
+    const tf = found.transform;
+    return {
+      bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height },
+      item: found,
+    };
+  }
+
+  // --- Più candidati: scegli quello la cui riga ha il numero più vicino a fieldValue ---
+  if (fieldValue !== null && fieldValue !== undefined) {
+    let bestDist = Infinity;
+    let bestItem = candidates[0];
+    for (const c of candidates) {
+      const { numericDistance } = findNumericNeighborForItem(items, c, fieldValue);
+      if (numericDistance < bestDist) {
+        bestDist = numericDistance;
+        bestItem = c;
+      }
+    }
+    const tf = bestItem.transform;
+    return {
+      bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height },
+      item: bestItem,
+    };
+  }
+
+  // Nessun fieldValue disponibile: usa il primo candidato (comportamento precedente)
+  const found = candidates[0];
   const tf = found.transform;
   return {
     bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height },
@@ -135,36 +238,7 @@ function findNumericNeighbor(
   labelItem: PdfTextItem,
   fieldValue: number | null | undefined,
 ): BBox | null {
-  const labelTf = labelItem.transform;
-  const labelY  = labelTf[5];
-  const labelX1 = labelTf[4] + labelItem.width;
-  const Y_TOL   = 5;
-
-  const sameRow = items.filter(it => {
-    const tf = it.transform;
-    return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
-  });
-  if (sameRow.length === 0) return null;
-
-  const numericTokens = sameRow.filter(it => /^-?[\d.,]+[-]?$/.test(it.str.trim()));
-  const candidates    = numericTokens.length > 0 ? numericTokens : sameRow;
-
-  if (fieldValue !== null && fieldValue !== undefined) {
-    const absVal = Math.abs(fieldValue);
-    const reprs  = [String(Math.round(absVal)), absVal.toFixed(0)];
-    const byValue = candidates.find(it => {
-      const s = it.str.replace(/[.,\s-]/g, '');
-      return reprs.some(r => s === r.replace(/[.,\s-]/g, ''));
-    });
-    if (byValue) {
-      const tf = byValue.transform;
-      return { x0: tf[4], y0: tf[5], x1: tf[4] + byValue.width, y1: tf[5] + byValue.height };
-    }
-  }
-
-  const closest = candidates.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
-  const tf = closest.transform;
-  return { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height };
+  return findNumericNeighborForItem(items, labelItem, fieldValue).numBbox;
 }
 
 async function findBboxByText(
@@ -184,7 +258,7 @@ async function findBboxByText(
       .filter(s => s.length > 0);
 
     if (rawSegments.length <= 1) {
-      const r = await findSingleBboxWithItem(items, rawText);
+      const r = await findSingleBboxWithItem(items, rawText, fieldValue);
       if (!r) return null;
       const numBbox = findNumericNeighbor(items, r.item, fieldValue ?? null);
       const bboxes  = numBbox ? [r.bbox, numBbox] : [r.bbox];
@@ -195,7 +269,7 @@ async function findBboxByText(
       const firstSeg  = rawSegments[0];
       const nameOnly  = segmentDisplayName(firstSeg);
       const lookupSeg = nameOnly.length >= 3 ? nameOnly : firstSeg;
-      const r = await findSingleBboxWithItem(items, lookupSeg);
+      const r = await findSingleBboxWithItem(items, lookupSeg, fieldValue);
       if (!r) return null;
       const numBbox  = findNumericNeighbor(items, r.item, fieldValue ?? null);
       const bboxes   = numBbox ? [r.bbox, numBbox] : [r.bbox];
@@ -209,7 +283,7 @@ async function findBboxByText(
     for (const seg of rawSegments) {
       const cleanSeg  = seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
       const lookupSeg = cleanSeg.length >= 3 ? cleanSeg : seg;
-      const r = await findSingleBboxWithItem(items, lookupSeg);
+      const r = await findSingleBboxWithItem(items, lookupSeg, fieldValue);
       if (!r) continue;
       const isDup = bboxes.some(b =>
         Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2
