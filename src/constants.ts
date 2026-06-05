@@ -3,24 +3,21 @@
  */
 
 // ─── Modelli OpenRouter (tutti :free) ─────────────────────────────────────
-// Estrazione KPI: Nemotron Super 120B — 1M context, eccellente su tabelle IT
-export const OPENROUTER_MODEL_EXTRACT = 'nvidia/nemotron-3-super-120b-a12b:free';
-
-// Narrativa tecnica: Nemotron Super 120B — stesso modello, ottimo per testo italiano
+export const OPENROUTER_MODEL_EXTRACT   = 'nvidia/nemotron-3-super-120b-a12b:free';
 export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
+export const OPENROUTER_MODEL_FALLBACK  = 'google/gemma-4-31b-it:free';
 
-// Fallback automatico se il modello primario è sovraccarico o non disponibile
-export const OPENROUTER_MODEL_FALLBACK = 'google/gemma-4-31b-it:free';
-
-// Endpoint OpenRouter — la chiave API è gestita SOLO dal Cloudflare Worker
-// Il frontend chiama VITE_PROXY_URL, mai OpenRouter direttamente
+// Endpoint del proxy Cloudflare Worker
 export const OPENROUTER_ENDPOINT = import.meta.env.VITE_PROXY_URL as string;
 
+// ─── PROMPT ESTRAZIONE ────────────────────────────────────────────────────
 /**
- * Prompt per l'estrazione dati dai PDF.
- * Forza il modello a restituire solo JSON puro.
+ * Sezione CONTRATTUALE — non editabile, non inviata al KV.
+ * Definisce ruolo, mappature voci di bilancio, struttura JSON di output.
+ * Questa sezione garantisce l'integrità del parsing e NON deve essere
+ * modificata dall'utente per non rompere il flusso di estrazione.
  */
-export const EXTRACTION_PROMPT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE.
+export const EXTRACTION_PROMPT_CONTRACT = `Sei un esperto analista finanziario italiano specializzato in istruttorie per il GSE.
 Analizza i documenti PDF allegati (bilanci aziendali e documenti GSE) ed estrai i dati richiesti.
 
 Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick.
@@ -70,7 +67,7 @@ Per ogni voce della checklist:
 - "page": numero di pagina dove e stata trovata la fonte (null se assente)
 - "sourceFileName": nome del file PDF da cui e stato estratto
 
-Struttura JSON richiesta:
+Struttura JSON richiesta (NON modificare i nomi delle chiavi):
 {
   "companyName": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
   "vatNumber": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
@@ -101,44 +98,29 @@ Struttura JSON richiesta:
     }
   ],
   "checklist": {
-    "debitiGSE": {
-      "presente": false,
-      "dettaglio": "string",
-      "fonteTestuale": "string",
-      "page": null,
-      "sourceFileName": "string"
-    },
-    "accantonamenti": {
-      "presente": false,
-      "dettaglio": "string",
-      "fonteTestuale": "string",
-      "page": null,
-      "sourceFileName": "string"
-    },
-    "riduzioniRicavi": {
-      "presente": false,
-      "dettaglio": "string",
-      "fonteTestuale": "string",
-      "page": null,
-      "sourceFileName": "string"
-    },
-    "contenziosi": {
-      "presente": false,
-      "dettaglio": "string",
-      "fonteTestuale": "string",
-      "page": null,
-      "sourceFileName": "string"
-    }
+    "debitiGSE":       { "presente": false, "dettaglio": "string", "fonteTestuale": "string", "page": null, "sourceFileName": "string" },
+    "accantonamenti":  { "presente": false, "dettaglio": "string", "fonteTestuale": "string", "page": null, "sourceFileName": "string" },
+    "riduzioniRicavi": { "presente": false, "dettaglio": "string", "fonteTestuale": "string", "page": null, "sourceFileName": "string" },
+    "contenziosi":     { "presente": false, "dettaglio": "string", "fonteTestuale": "string", "page": null, "sourceFileName": "string" }
   }
-}
-`;
+}`;
 
 /**
- * Prompt per la generazione della narrativa tecnica.
- * Riceve i dati estratti JSON + i KPI già calcolati deterministicamente.
- * Risponde SOLO con JSON contenente i 4 paragrafi + esito + commentoCopertura.
+ * Sezione CUSTOM di default per il prompt di estrazione.
+ * Questa parte è editabile dall'utente dalle Impostazioni e salvata su KV.
+ * Viene accodata al testo contrattuale prima di ogni chiamata AI.
  */
-export const NARRATIVE_PROMPT = (extractedDataJson: string, kpiJson: string) =>
+export const EXTRACTION_PROMPT_CUSTOM_DEFAULT = `Presta particolare attenzione a:
+- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)
+- Leggere le note integrative per voci non presenti nello schema abbreviato
+- Riportare i valori in unità di euro (non in migliaia)`;
+
+// ─── PROMPT NARRATIVA ─────────────────────────────────────────────────────
+/**
+ * Sezione CONTRATTUALE del prompt narrativa — non editabile.
+ * Definisce ruolo, struttura output JSON, esito a 3 valori fissi.
+ */
+export const NARRATIVE_PROMPT_CONTRACT = (extractedDataJson: string, kpiJson: string) =>
   `Sei un funzionario GSE esperto in istruttorie economico-finanziarie per la verifica della sostenibilita del debito da extraprofitti (art. 15-bis D.L. 4/2022).
 
 Dati estratti dai bilanci (JSON):
@@ -156,5 +138,34 @@ Redigi una relazione tecnica professionale in italiano con le seguenti sezioni. 
 5. "esito": UNA SOLA delle tre stringhe esatte: "SOSTENIBILE" oppure "CAUTELA" oppure "RISCHIO ELEVATO"
 6. "commentoCopertura": Una frase breve (max 2 righe) che commenta sinteticamente gli indici di copertura cassa/attivo/patrimonio rispetto al residuo GSE.
 
-Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.
-`;
+Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.`;
+
+/**
+ * Sezione CUSTOM di default per il prompt narrativa.
+ * Editabile dall'utente dalle Impostazioni e salvata su KV.
+ */
+export const NARRATIVE_PROMPT_CUSTOM_DEFAULT = `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.
+Se i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.
+Evita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`;
+
+/**
+ * Helper: assembla il prompt completo unendo sezione contrattuale + custom.
+ * La sezione custom, se vuota, viene omessa.
+ */
+export const buildExtractionPrompt = (custom: string, fileName: string): string => {
+  const customTrimmed = custom.trim();
+  const base = EXTRACTION_PROMPT_CONTRACT
+    + (customTrimmed ? `\n\nISTRUZIONI AGGIUNTIVE (configurate dall'operatore):\n${customTrimmed}` : '')
+    + `\n\nNOTA: Stai analizzando UN SOLO documento (${fileName}).\nNell'array "yearsData" includi SOLO l'anno relativo a questo documento (un solo elemento).\nCompila comunque companyName, vatNumber, gseResidual e checklist.`;
+  return base;
+};
+
+export const buildNarrativePrompt = (custom: string, extractedDataJson: string, kpiJson: string): string => {
+  const customTrimmed = custom.trim();
+  return NARRATIVE_PROMPT_CONTRACT(extractedDataJson, kpiJson)
+    + (customTrimmed ? `\n\nISTRUZIONI AGGIUNTIVE (configurate dall'operatore):\n${customTrimmed}` : '');
+};
+
+// Alias mantenuti per retrocompatibilità (usati da geminiService esistente — saranno rimossi)
+export const EXTRACTION_PROMPT = EXTRACTION_PROMPT_CONTRACT;
+export const NARRATIVE_PROMPT  = (e: string, k: string) => NARRATIVE_PROMPT_CONTRACT(e, k);
