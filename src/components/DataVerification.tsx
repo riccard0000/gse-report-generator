@@ -88,7 +88,6 @@ function parseIT(s: string): number {
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   const src = (field.rawLabel ?? field.rawText ?? '').trim();
   if (!src) return '';
-  // Per campi multi-riga mostra solo la prima riga del rawText
   const firstLine = src.split('\n')[0];
   let s = firstLine
     .replace(/[\t]/g, ' ')
@@ -99,13 +98,11 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
 }
 
-// Controlla se un campo ha rawText multi-riga (campo aggregato da nota)
 function isMultiLineField(field: ExtractedField<unknown> | null | undefined): boolean {
   if (!field?.rawText) return false;
   return field.rawText.includes('\n');
 }
 
-// Conta le righe di un rawText multi-riga
 function countRawLines(field: ExtractedField<unknown>): number {
   if (!field?.rawText) return 0;
   return field.rawText.split('\n').filter(l => l.trim().length > 0).length;
@@ -120,6 +117,12 @@ function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
 }
 
+// Restituisce true se la stringa è composta solo da cifre, separatori numerici
+// italiani (punto migliaia, virgola decimale) e segno meno — nessuna lettera.
+function isPureNumeric(s: string): boolean {
+  return /^-?[\d.,\s]+[-]?$/.test(s.trim());
+}
+
 interface PdfTextItem {
   str: string;
   transform: number[];
@@ -128,7 +131,12 @@ interface PdfTextItem {
 }
 
 // ---------------------------------------------------------------------------
-// Utility PDF: token fusi e righe
+// buildMergedTokens
+// FIX Bug singola-riga: i token puramente numerici NON vengono fusi tra loro
+// con gap > 2px. Questo mantiene separate le celle numeriche di una tabella
+// (Consist.iniziale, Consist.finale, Variaz.assoluta, Variaz.%) che nei PDF
+// bilancio sono spaziate di qualche px ma non 8px.
+// I token misti testo+numero continuano a fondersi con gap <= 8px.
 // ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -150,7 +158,12 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
       const next = sorted[j];
       const gap  = next.transform[4] - fusedX1;
       if (Math.abs(next.transform[5] - curY) > 3) break;
-      if (gap > 8) break;
+      // Se ENTRAMBI i token (quello accumulato e il prossimo) sono
+      // puramente numerici, usiamo una soglia di fusione molto stretta (2px)
+      // per non unire celle di colonne diverse nella stessa tabella.
+      const bothNumeric = isPureNumeric(fusedStr) && isPureNumeric(next.str);
+      const maxGap = bothNumeric ? 2 : 8;
+      if (gap > maxGap) break;
       fusedStr    += next.str;
       fusedX1      = next.transform[4] + next.width;
       fusedHeight  = Math.max(fusedHeight, next.height);
@@ -204,6 +217,12 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
 
 // ---------------------------------------------------------------------------
 // findNumericNeighbor
+// FIX Bug singola-riga: tra più match esatti (distanza 0) sceglie quello con
+// X più vicina all'etichetta (prima colonna numerica a destra dell'etichetta),
+// non quello con valore numerico più simile (che poteva essere una colonna
+// lontana con lo stesso numero).
+// Threshold best-fit abbassato a 1% per ridurre falsi match su righe con
+// molti valori simili.
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -214,24 +233,40 @@ function findNumericNeighbor(
   const labelX1 = labelItem.transform[4] + labelItem.width;
   const Y_TOL   = 8;
   const mergedItems = buildMergedTokens(items);
-  const sameRow = mergedItems.filter(it => {
-    const tf = it.transform;
-    return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
-  });
+
+  // Token sulla stessa riga, a destra dell'etichetta, ordinati per X crescente
+  const sameRow = mergedItems
+    .filter(it => {
+      const tf = it.transform;
+      return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
+    })
+    .sort((a, b) => a.transform[4] - b.transform[4]);
+
   if (sameRow.length === 0) return { numBbox: null, numericDistance: Infinity };
-  const numericTokens = sameRow.filter(it => /^-?[\d.,\s]+[-]?$/.test(it.str.trim()));
+
+  const numericTokens = sameRow.filter(it => isPureNumeric(it.str));
   const pool          = numericTokens.length > 0 ? numericTokens : sameRow;
+
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
-    const exactMatch   = pool.find(it => normalizeNumStr(it.str) === targetDigits);
-    if (exactMatch) {
-      const tf = exactMatch.transform;
+
+    // Raccoglie TUTTI i match esatti (distanza normalizzata = 0)
+    const exactMatches = pool.filter(it => normalizeNumStr(it.str) === targetDigits);
+    if (exactMatches.length > 0) {
+      // Tra i match esatti, prende quello con X più piccola (più vicino all'etichetta)
+      const best = exactMatches.reduce((a, b) =>
+        a.transform[4] < b.transform[4] ? a : b
+      );
+      const tf = best.transform;
       return {
-        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + exactMatch.width, y1: tf[5] + exactMatch.height },
+        numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + best.width, y1: tf[5] + best.height },
         numericDistance: 0,
       };
     }
+
+    // Nessun match esatto: cerca il candidato con valore parsed più vicino,
+    // con soglia di tolleranza all'1% (era 5%) per evitare falsi positivi.
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
@@ -242,7 +277,8 @@ function findNumericNeighbor(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    const threshold = Math.max(5, absVal * 0.05);
+    // Soglia: max 1% di scarto oppure 1€ assoluto (per valori piccoli)
+    const threshold = Math.max(1, absVal * 0.01);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
       return {
@@ -252,7 +288,9 @@ function findNumericNeighbor(
     }
     return { numBbox: null, numericDistance: Infinity };
   }
-  const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
+
+  // fieldValue non disponibile: prende il token numerico più a sinistra
+  const closest = pool[0];
   const tf = closest.transform;
   return {
     numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height },
@@ -334,8 +372,7 @@ function matchLabelInPage(
 }
 
 // ---------------------------------------------------------------------------
-// findAllMatchesForPrefix — usata per campi multi-riga (rawLabel = prefisso)
-// Restituisce TUTTI i match nel PDF che iniziano con il prefisso dato.
+// findAllMatchesForPrefix
 // ---------------------------------------------------------------------------
 function findAllMatchesForPrefix(
   items: PdfTextItem[],
@@ -379,29 +416,30 @@ async function findBboxForField(
     const rawText  = (field.rawText  ?? '').trim();
 
     // ── PERCORSO MULTI-RIGA ─────────────────────────────────────────────────
-    // Attivato quando rawText contiene almeno un \n (campo aggregato da nota)
     if (rawText.includes('\n')) {
       const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const allBboxes: BBox[] = [];
 
       for (const line of lines) {
-        // Estrae il testo-etichetta della riga (tutto prima del primo \t o del primo numero)
-        const labelPart = line.split('\t')[0].trim();
+        // Etichetta = tutto prima del primo tab; valore = parte dopo il tab
+        const parts      = line.split('\t');
+        const labelPart  = parts[0].trim();
+        // Tenta di estrarre il valore numerico della riga dal rawText stesso
+        const lineValue  = parts.length > 1 ? parseIT(parts[1].trim()) : null;
+        const lineValArg = (lineValue !== null && !isNaN(lineValue) && lineValue !== 0)
+          ? lineValue : null;
+
         if (!labelPart) continue;
 
-        const match = matchLabelInPage(items, rows, labelPart, null);
+        const match = matchLabelInPage(items, rows, labelPart, lineValArg);
         if (!match) continue;
 
-        // bbox dell'etichetta
         allBboxes.push(match.labelBbox);
 
-        // bbox del valore numerico sulla stessa riga (se presente)
-        const { numBbox } = findNumericNeighbor(items, match.item, null);
+        const { numBbox } = findNumericNeighbor(items, match.item, lineValArg);
         if (numBbox) allBboxes.push(numBbox);
       }
 
-      // Fallback: se non abbiamo trovato nulla riga per riga,
-      // usa il prefisso rawLabel per trovare tutte le occorrenze
       if (allBboxes.length === 0 && rawLabel) {
         const matches = findAllMatchesForPrefix(items, rows, rawLabel);
         for (const m of matches) {
@@ -414,7 +452,7 @@ async function findBboxForField(
       return null;
     }
 
-    // ── PERCORSO SINGOLA RIGA (logica esistente) ─────────────────────────────
+    // ── PERCORSO SINGOLA RIGA ────────────────────────────────────────────────
     const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
     const aiLabel      = rawLabel;
     const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
@@ -589,7 +627,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       if (hl.isChecklist) {
         colors = HIGHLIGHT_CHECKLIST_COLOR;
       } else if (hl.isMultiSum) {
-        // Alterna viola per label e verde per valore, su ogni coppia
         colors = idx % 2 === 0 ? HIGHLIGHT_MULTIROW_COLOR : HIGHLIGHT_VALUE_COLOR;
       } else {
         colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
@@ -735,7 +772,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
 
-  // Legenda in fondo al viewer
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
     if (highlight.isChecklist) return [{ color: HIGHLIGHT_CHECKLIST_COLOR.border, name: 'Fonte checklist' }];
@@ -791,7 +827,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Definizione campi RAW con chiave tipizzata BalanceFieldKey
+// Definizione campi
 // ---------------------------------------------------------------------------
 const YEAR_FIELDS: { key: BalanceFieldKey; label: string }[] = [
   { key: 'ricavi',               label: 'Ricavi' },
@@ -862,8 +898,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[fileIdx] ?? HIGHLIGHT_COLORS[0];
     if (!field?.page) { setActiveHighlight(null); return; }
-
-    // Placeholder highlight immediato mentre aspettiamo il calcolo bbox
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
     try {
@@ -1037,7 +1071,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         onFocus={() => handleFieldFocus(key, field, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
-                      {/* Riga Σ per campi multi-riga */}
                       {isMultiRow && field?.value !== null && field?.value !== undefined && (
                         <p className="mt-0.5 text-[10px] text-violet-600 font-semibold flex items-center gap-1">
                           <Layers className="w-3 h-3" />
