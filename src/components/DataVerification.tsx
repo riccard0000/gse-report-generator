@@ -61,6 +61,18 @@ function cleanRawText(raw: string, maxLen = 60): string {
 }
 
 // ---------------------------------------------------------------------------
+// Estrae il primo numero presente in una stringa di segmento.
+// Es. "Debiti banche breve 500.000" → 500000
+// Es. "Totale attivo" → null (nessun numero)
+// ---------------------------------------------------------------------------
+function extractSegmentValue(seg: string): number | null {
+  const match = seg.match(/-?[\d]+(?:[.,][\d]+)*/);
+  if (!match) return null;
+  const parsed = parseIT(match[0]);
+  return isNaN(parsed) ? null : parsed;
+}
+
+// ---------------------------------------------------------------------------
 // Tipi
 // ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
@@ -93,7 +105,6 @@ function findNumericNeighborForItem(
   const labelX1 = labelTf[4] + labelItem.width;
   const Y_TOL   = 5;
 
-  // Tutti i token a destra dell'etichetta sulla stessa riga
   const sameRow = items.filter(it => {
     const tf = it.transform;
     return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
@@ -214,9 +225,14 @@ async function findSingleBboxWithItem(
 }
 
 // ---------------------------------------------------------------------------
-// Core: dato un rawText (e il fieldValue atteso), restituisce MatchResult
-// con SEMPRE 2 bbox per single/formula: [etichetta, numero].
-// Il numero viene cercato per valore esatto sulla riga — non per posizione.
+// Core: dato un rawText (e il fieldValue atteso), restituisce MatchResult.
+//
+// single/formula → sempre 2 bbox: [etichetta(blu), valore(verde)]
+//
+// multi-sum → per ogni segmento: [etichetta(blu), valore-parziale(verde)]
+//   Il valore parziale viene estratto dal testo del segmento stesso
+//   (es. "Debiti banche breve 500.000" → cerca 500000 sulla riga),
+//   NON dal fieldValue totale — che sarebbe la somma di tutti i segmenti.
 // ---------------------------------------------------------------------------
 async function findBboxByText(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -238,14 +254,12 @@ async function findBboxByText(
     if (rawSegments.length <= 1) {
       const r = await findSingleBboxWithItem(items, rawText, fieldValue);
       if (!r) return null;
-      // Cerca il numero esatto sulla riga: se fieldValue è disponibile lo
-      // usa per trovare il token corretto anche quando ci sono più valori.
       const { numBbox } = findNumericNeighborForItem(items, r.item, fieldValue ?? null);
       const bboxes = numBbox ? [r.bbox, numBbox] : [r.bbox];
       return { kind: 'single', bboxes, segmentNames: [rawText] };
     }
 
-    // ── CASO FORMULA (rawText contiene cifre → es. "EBIT 120.000 + amm. 30.000") ──
+    // ── CASO FORMULA (segmenti contengono cifre inline) ──────────────────────
     if (isCalculatedFormula(rawSegments)) {
       const firstSeg  = rawSegments[0];
       const nameOnly  = segmentDisplayName(firstSeg);
@@ -258,22 +272,36 @@ async function findBboxByText(
       return { kind: 'formula', bboxes, segmentNames: segNames };
     }
 
-    // ── CASO MULTI-SUM (somma di righe distinte) ──────────────────────────────
-    // Per ogni segmento evidenziamo solo l'etichetta (nessun valore univoco).
+    // ── CASO MULTI-SUM ────────────────────────────────────────────────────────
+    // Per ogni segmento: cerca l'etichetta testuale + il suo valore parziale.
+    // Il valore parziale è estratto dal testo del segmento (non dal totale).
     const bboxes:       BBox[]   = [];
     const segmentNames: string[] = [];
 
     for (const seg of rawSegments) {
-      const cleanSeg  = seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
+      // Valore numerico del singolo segmento (es. 500.000 da "Debiti banche 500.000")
+      const segValue  = extractSegmentValue(seg);
+
+      const cleanSeg  = segmentDisplayName(seg);
       const lookupSeg = cleanSeg.length >= 3 ? cleanSeg : seg;
-      const r = await findSingleBboxWithItem(items, lookupSeg, fieldValue);
+
+      // Cerca l'etichetta; se ci sono duplicati usa segValue per disambiguare
+      const r = await findSingleBboxWithItem(items, lookupSeg, segValue);
       if (!r) continue;
+
       const isDup = bboxes.some(b =>
         Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2
       );
       if (isDup) continue;
+
+      // bbox etichetta
       bboxes.push(r.bbox);
       segmentNames.push(cleanSeg || seg);
+
+      // bbox valore parziale sulla stessa riga
+      const { numBbox } = findNumericNeighborForItem(items, r.item, segValue);
+      if (numBbox) bboxes.push(numBbox);
+      // segmentNames non cresce per numBbox: la legenda mostra solo le etichette
     }
 
     if (bboxes.length === 0) return null;
@@ -347,12 +375,14 @@ const NumericInput: React.FC<NumericInputProps> = ({
 // ---------------------------------------------------------------------------
 const HIGHLIGHT_LABEL_COLOR  = { fill: 'rgba(59,130,246,0.22)',  stroke: 'rgba(59,130,246,0.85)'  };
 const HIGHLIGHT_VALUE_COLOR  = { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  };
+// multi-sum: coppie etichetta(blu)/valore(verde) che si ripetono per ogni segmento
 const MULTI_HIGHLIGHT_COLORS = [
-  { fill: 'rgba(59,130,246,0.28)',  stroke: 'rgba(59,130,246,0.90)'  },
-  { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  },
-  { fill: 'rgba(245,158,11,0.28)',  stroke: 'rgba(245,158,11,0.90)'  },
-  { fill: 'rgba(239,68,68,0.28)',   stroke: 'rgba(239,68,68,0.90)'   },
-  { fill: 'rgba(168,85,247,0.28)',  stroke: 'rgba(168,85,247,0.90)'  },
+  { fill: 'rgba(59,130,246,0.22)',  stroke: 'rgba(59,130,246,0.85)'  },  // etichetta seg 1
+  { fill: 'rgba(16,185,129,0.28)',  stroke: 'rgba(16,185,129,0.90)'  },  // valore seg 1
+  { fill: 'rgba(245,158,11,0.22)',  stroke: 'rgba(245,158,11,0.85)'  },  // etichetta seg 2
+  { fill: 'rgba(239,68,68,0.22)',   stroke: 'rgba(239,68,68,0.85)'   },  // valore seg 2
+  { fill: 'rgba(168,85,247,0.22)',  stroke: 'rgba(168,85,247,0.85)'  },  // etichetta seg 3
+  { fill: 'rgba(20,184,166,0.28)',  stroke: 'rgba(20,184,166,0.90)'  },  // valore seg 3
 ];
 
 interface ActiveHighlight {
@@ -404,12 +434,23 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     renderingRef.current = true;
 
     try {
-      const pdfPage  = await pdf.getPage(page);
+      const pdfPage = await pdf.getPage(page);
       if (seq !== renderSeqRef.current) return;
 
-      const viewport = pdfPage.getViewport({ scale: 1.5 });
-      canvas.width   = viewport.width;
-      canvas.height  = viewport.height;
+      // FIX sfuocatura HiDPI: scala il canvas per devicePixelRatio
+      // così su schermi retina (dpr=2) il canvas è 2× più grande in pixel
+      // fisici ma viene mostrato alle dimensioni CSS logiche → nitido.
+      const dpr      = window.devicePixelRatio || 1;
+      const BASE_SCALE = 1.5;
+      const viewport = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
+
+      // Dimensioni fisiche del canvas (pixel reali)
+      canvas.width  = viewport.width;
+      canvas.height = viewport.height;
+
+      // Dimensioni CSS logiche (pixel logici) → il browser scala correttamente
+      canvas.style.width  = `${viewport.width  / dpr}px`;
+      canvas.style.height = `${viewport.height / dpr}px`;
 
       const ctx  = canvas.getContext('2d')!;
       const task = pdfPage.render({ canvasContext: ctx, viewport });
@@ -422,10 +463,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         hl.bboxes.forEach((bbox, idx) => {
           if (isBboxEmpty(bbox)) return;
 
-          // single/formula: idx 0 = etichetta (blu), idx 1 = valore (verde)
-          // multi-sum: colori ciclici per segmento
           let colors: { fill: string; stroke: string };
           if (hl.isMultiSum) {
+            // coppie: idx pari = etichetta, idx dispari = valore
             colors = MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length];
           } else {
             colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
@@ -502,13 +542,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
 
-  // Legenda: per single/formula mostra "Etichetta" + "Valore"; per multi-sum mostra i nomi
+  // Legenda multi-sum: mostra solo le etichette (bbox pari), con il loro colore
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
     if (highlight.isMultiSum) {
-      return visibleBboxes.map((_, i) => ({
-        color: MULTI_HIGHLIGHT_COLORS[i % MULTI_HIGHLIGHT_COLORS.length].stroke,
-        name:  highlight.segmentNames[i] ?? `Voce ${i + 1}`,
+      return highlight.segmentNames.map((name, i) => ({
+        color: MULTI_HIGHLIGHT_COLORS[(i * 2) % MULTI_HIGHLIGHT_COLORS.length].stroke,
+        name,
       }));
     }
     const items = [];
@@ -633,8 +673,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
-  // handleFieldFocus: ignora field.bbox precompilato dal modello e fa sempre
-  // ricerca live su pdfjs con etichetta + valore numerico atteso.
   const handleFieldFocus = useCallback(async (
     field: ExtractedField<any> | null,
     colorIndex: number,
@@ -642,13 +680,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
 
-    // Nessuna informazione utile
     if (!field?.page || !field?.rawText) {
       setActiveHighlight(null);
       return;
     }
 
-    // Placeholder: naviga alla pagina mentre la ricerca è in corso
     setActiveHighlight({
       page: field.page, bboxes: [EMPTY_BBOX],
       segmentNames: [], color, isMultiSum: false,
@@ -658,9 +694,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-      // Passa sempre field.value come fieldValue → findNumericNeighborForItem
-      // usa il valore numerico atteso per trovare il token corretto tra più
-      // candidati sulla stessa riga.
       const result = await findBboxByText(
         doc,
         field.page,
