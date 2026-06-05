@@ -8,13 +8,9 @@ compatibility_date = "2024-01-01"
 #   gse_prompt        → prompt custom estrazione e narrativa
 #   history_index     → array metadati storico estrazioni
 #   history:<ts>:<cf> → record completo singola estrazione
-#
-# Per ottenere l'ID del namespace già creato:
-#   wrangler kv:namespace list
-# Poi sostituire l'id qui sotto.
 [[kv_namespaces]]
 binding = "GSE_CONFIG"
-id      = "SOSTITUIRE_CON_ID_REALE"
+id      = "20b46f062f9545e5b89c9447962c1f1d"
 
 # ── Secret (non va nel toml) ──────────────────────────────────────────────────
 # wrangler secret put OPENROUTER_API_KEY
