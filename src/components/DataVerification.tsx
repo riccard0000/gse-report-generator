@@ -14,17 +14,24 @@ const TEXT_LAYER_CSS = `
   line-height: 1;
   text-size-adjust: none;
   forced-color-adjust: none;
+  /* Disabilita completamente la selezione testo visiva:
+     il layer è usato solo per il hit-testing delle bbox, non per la lettura */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .pdfTextLayer span,
 .pdfTextLayer br {
   color: transparent;
   position: absolute;
   white-space: pre;
-  cursor: text;
+  cursor: default;
   transform-origin: 0% 0%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .pdfTextLayer ::selection {
-  background: rgba(0,0,255,0.25);
+  /* Nessuna selezione visibile */
+  background: transparent;
   color: transparent;
 }
 .pdfTextLayer .endOfContent {
@@ -87,38 +94,18 @@ function cleanRawText(raw: string, maxLen = 60): string {
 
 /**
  * Estrae il valore numerico da un segmento rawText.
- *
- * Il modello AI serializza la riga della tabella come stringa piatta, quindi
- * i numeri di colonne adiacenti finiscono nello stesso segmento separati da
- * spazi (es. "INAIL 1 59" → la colonna corrente è 167, la precedente è 159).
- *
- * Strategia:
- *   1. Raccoglie tutti i "token numerici" del segmento (sequenze di cifre,
- *      eventualmente con separatori . , -).
- *   2. Ricostruisce ogni numero comprimendo gli spazi interni tra cifre
- *      (es. "1 59" → "159") per gestire casi in cui lo spazio non è un
- *      separatore di colonna ma un artefatto di tokenizzazione.
- *   3. Ritorna l'ULTIMO numero trovato: nella struttura tipica del bilancio
- *      "Descrizione valore_corrente valore_precedente" il modello estrae il
- *      valore precedente (usato per l'anno di riferimento), che si trova in
- *      coda alla stringa.
  */
 function extractSegmentValue(seg: string): number | null {
-  // Estrai tutti i token che contengono solo cifre, separatori numerici e spazi
-  // Unisci token adiacenti che sembrano parti dello stesso numero (es. "1" "59" → "159")
   const digitGroups = seg.match(/-?[\d][\d\s.,]*[\d]|-?\d/g);
   if (!digitGroups || digitGroups.length === 0) return null;
 
-  // Per ogni gruppo: rimuovi spazi interni tra cifre (ricostruzione numero spezzato)
   const numbers: number[] = [];
   for (const g of digitGroups) {
-    // "1 59" → "159", "1.234" → 1234 (separatore migliaia), "1,5" → 1.5
     const compacted = g.replace(/(?<=\d) (?=\d)/g, '');
     const parsed    = parseIT(compacted);
     if (!isNaN(parsed) && parsed !== 0) numbers.push(parsed);
   }
   if (numbers.length === 0) return null;
-  // Ultimo numero = valore di colonna più a destra (esercizio precedente nel bilancio)
   return numbers[numbers.length - 1];
 }
 
@@ -141,25 +128,10 @@ function segmentDisplayName(seg: string): string {
   return seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
-/**
- * Normalizza una stringa numerica per il confronto esatto:
- * rimuove separatori (. , spazi) e segno trailing, restituisce solo le cifre.
- * Es: "1.234" → "1234", "1 59" → "159", "159-" → "159"
- */
 function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
 }
 
-/**
- * Cerca il token numerico sulla stessa riga dell'etichetta che corrisponde
- * ESATTAMENTE al valore atteso (fieldValue).
- *
- * Ordine di priorità:
- *   1. Corrispondenza esatta su TUTTI i token numerici della riga
- *      (confronto cifre normalizzate, indipendente dalla posizione X)
- *   2. Se non trovata: token con distanza numerica minima
- *   3. Se fieldValue è null: primo token numerico a sinistra
- */
 function findNumericNeighborForItem(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
@@ -181,11 +153,8 @@ function findNumericNeighborForItem(
 
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal      = Math.abs(fieldValue);
-    // Rappresentazioni canoniche del valore (solo cifre)
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
 
-    // --- PASSO 1: corrispondenza esatta su TUTTI i token numerici ---
-    // Cerca in tutti i token, non solo il primo a sinistra
     const exactMatch = pool.find(it => {
       const normalized = normalizeNumStr(it.str);
       return normalized === targetDigits;
@@ -198,11 +167,9 @@ function findNumericNeighborForItem(
       };
     }
 
-    // --- PASSO 2: distanza numerica minima (fallback) ---
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of numericTokens) {
-      // Prova anche a ricostruire numeri spezzati da spazi nel token
       const compacted = it.str.replace(/(?<=\d) (?=\d)/g, '');
       const parsed    = parseIT(compacted);
       if (!isNaN(parsed)) {
@@ -219,7 +186,6 @@ function findNumericNeighborForItem(
     }
   }
 
-  // --- PASSO 3: primo token numerico a sinistra (nessun fieldValue) ---
   const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return {
@@ -319,7 +285,6 @@ async function findBboxByText(
       };
     }
 
-    // multi-sum: etichetta + valore parziale per ogni segmento
     const bboxes: BBox[] = [];
     const segmentNames: string[] = [];
     for (const seg of rawSegments) {
@@ -403,7 +368,7 @@ const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
 function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
 
 // ---------------------------------------------------------------------------
-// PdfViewer — canvas + text layer (selezionabile) + highlight layer
+// PdfViewer — canvas + text layer (solo hit-testing) + highlight layer
 // ---------------------------------------------------------------------------
 interface PdfViewerProps {
   file:      File;
@@ -622,13 +587,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100">
+      {/* Il container del viewer non deve propagare selezioni al di fuori */}
+      <div
+        className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100"
+        style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+      >
         <div ref={containerRef} className="relative shadow-2xl inline-block">
           <canvas ref={canvasRef} className="block" />
           <div
             ref={textLayerRef}
             className="pdfTextLayer"
-            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto' }}
+            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
           />
           <div
             ref={hlLayerRef}
