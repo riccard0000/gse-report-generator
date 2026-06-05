@@ -14,8 +14,6 @@ const TEXT_LAYER_CSS = `
   line-height: 1;
   text-size-adjust: none;
   forced-color-adjust: none;
-  /* Disabilita completamente la selezione testo visiva:
-     il layer è usato solo per il hit-testing delle bbox, non per la lettura */
   user-select: none;
   -webkit-user-select: none;
 }
@@ -30,7 +28,6 @@ const TEXT_LAYER_CSS = `
   -webkit-user-select: none;
 }
 .pdfTextLayer ::selection {
-  /* Nessuna selezione visibile */
   background: transparent;
   color: transparent;
 }
@@ -83,9 +80,17 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
+/**
+ * Pulisce il rawText per la didascalia.
+ * REGOLA: inserisce spazio solo tra una lettera/punteggiatura e una cifra,
+ * MAI tra cifra e cifra (per non spezzare numeri come 160.638).
+ */
 function cleanRawText(raw: string, maxLen = 60): string {
   let s = raw
-    .replace(/([^\s])(-?\d)/g, '$1 $2')
+    // spazio solo se il carattere precedente è una lettera o chiusura parentesi, NON una cifra o punto/virgola
+    .replace(/([A-Za-zÀ-ÿ)])(\d)/g, '$1 $2')
+    // spazio tra cifra e lettera (es. "638totale" → "638 totale")
+    .replace(/(\d)([A-Za-zÀ-ÿ(])/g, '$1 $2')
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
@@ -132,6 +137,79 @@ function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
 }
 
+interface PdfTextItem {
+  str: string;
+  transform: number[];
+  width: number;
+  height: number;
+}
+
+/**
+ * Fonde token adiacenti sulla stessa riga in token virtuali più lunghi.
+ * Serve per gestire numeri come "160.638" che il PDF spezza in "160." + "638".
+ */
+function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
+  if (items.length === 0) return [];
+
+  // Ordina per Y (riga) poi per X (colonna)
+  const sorted = [...items].sort((a, b) => {
+    const dy = b.transform[5] - a.transform[5]; // Y decrescente (coordinate PDF)
+    if (Math.abs(dy) > 3) return dy;
+    return a.transform[4] - b.transform[4];
+  });
+
+  const merged: PdfTextItem[] = [];
+  let i = 0;
+  while (i < sorted.length) {
+    const cur = sorted[i];
+    const curY = cur.transform[5];
+    const curX1 = cur.transform[4] + cur.width;
+
+    // Prova a fondere con il token immediatamente successivo se:
+    // - stessa riga (|deltaY| <= 3)
+    // - molto vicini orizzontalmente (gap <= 4pt)
+    // - entrambi sembrano parti di un numero
+    let j = i + 1;
+    let fusedStr = cur.str;
+    let fusedX1 = curX1;
+    let fusedHeight = cur.height;
+
+    while (j < sorted.length) {
+      const next = sorted[j];
+      const nextY = next.transform[5];
+      const nextX0 = next.transform[4];
+      const gap = nextX0 - fusedX1;
+
+      if (Math.abs(nextY - curY) > 3) break;  // riga diversa
+      if (gap > 4) break;                       // troppo distanti
+
+      // Fonde solo se almeno uno dei due contiene cifre
+      const bothNumeric = /\d/.test(fusedStr) || /\d/.test(next.str);
+      if (!bothNumeric) break;
+
+      fusedStr += next.str;
+      fusedX1 = next.transform[4] + next.width;
+      fusedHeight = Math.max(fusedHeight, next.height);
+      j++;
+    }
+
+    if (j > i + 1) {
+      // Token fuso: usa transform del primo, width aggiornata
+      merged.push({
+        str: fusedStr,
+        transform: [...cur.transform],
+        width: fusedX1 - cur.transform[4],
+        height: fusedHeight,
+      });
+    } else {
+      merged.push(cur);
+    }
+    i = j > i + 1 ? j : i + 1;
+  }
+
+  return merged;
+}
+
 function findNumericNeighborForItem(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
@@ -142,7 +220,10 @@ function findNumericNeighborForItem(
   const labelX1 = labelTf[4] + labelItem.width;
   const Y_TOL   = 5;
 
-  const sameRow = items.filter(it => {
+  // Usa i token fusi per trovare numeri che potrebbero essere spezzati nel PDF
+  const mergedItems = buildMergedTokens(items);
+
+  const sameRow = mergedItems.filter(it => {
     const tf = it.transform;
     return Math.abs(tf[5] - labelY) <= Y_TOL && tf[4] > labelX1;
   });
@@ -152,9 +233,10 @@ function findNumericNeighborForItem(
   const pool          = numericTokens.length > 0 ? numericTokens : sameRow;
 
   if (fieldValue !== null && fieldValue !== undefined) {
-    const absVal      = Math.abs(fieldValue);
+    const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
 
+    // Cerca prima una corrispondenza esatta sulle cifre
     const exactMatch = pool.find(it => {
       const normalized = normalizeNumStr(it.str);
       return normalized === targetDigits;
@@ -167,9 +249,10 @@ function findNumericNeighborForItem(
       };
     }
 
+    // Fallback: token numerico più vicino per valore
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
-    for (const it of numericTokens) {
+    for (const it of pool) {
       const compacted = it.str.replace(/(?<=\d) (?=\d)/g, '');
       const parsed    = parseIT(compacted);
       if (!isNaN(parsed)) {
@@ -192,13 +275,6 @@ function findNumericNeighborForItem(
     numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + closest.width, y1: tf[5] + closest.height },
     numericDistance: Infinity,
   };
-}
-
-interface PdfTextItem {
-  str: string;
-  transform: number[];
-  width: number;
-  height: number;
 }
 
 async function findSingleBboxWithItem(
@@ -587,7 +663,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
         </div>
       </div>
 
-      {/* Il container del viewer non deve propagare selezioni al di fuori */}
       <div
         className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100"
         style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
