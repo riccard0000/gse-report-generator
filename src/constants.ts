@@ -190,19 +190,72 @@ export const NARRATIVE_PROMPT_CONTRACT = (extractedDataJson: string, kpiJson: st
 Dati estratti dai bilanci (JSON):
 ${extractedDataJson}
 
-KPI calcolati deterministicamente sull'ultimo anno disponibile:
+KPI calcolati deterministicamente dal sistema sull'ULTIMO ANNO disponibile in yearsData (anno con valore "year" piu alto):
 ${kpiJson}
 
-Redigi una relazione tecnica professionale in italiano con le seguenti sezioni. Ogni sezione deve essere un paragrafo discorsivo di 4-6 righe, in terza persona, con stile formale da istruttoria GSE.
+REGOLE FONDAMENTALI PER LA REDAZIONE:
 
-1. "analisiRicavi": Analizza il trend dei ricavi negli anni disponibili. Commenta l'andamento dell'utile netto e il confronto con l'importo residuo GSE. Evidenzia segnali positivi o negativi.
-2. "analisiLiquidita": Commenta i ratios di liquidita (current, quick, cash ratio). Valuta la capacita di copertura del residuo GSE con le disponibilita immediate e il circolante.
-3. "accantonamenti": Analizza cosa emerge dalla checklist GSE/extraprofitti (debiti iscritti, accantonamenti, riduzioni ricavi, contenziosi). Per ciascuna voce, fai riferimento alla fonteTestuale estratta. Valuta il rischio di passivita potenziali non rilevate.
-4. "conclusione": Giudizio sintetico finale sulla sostenibilita dell'esborso, segnali di rischio prevalenti, raccomandazione operativa.
+1. ANNO DI RIFERIMENTO PER I KPI:
+   I KPI nel JSON sopra si riferiscono ESCLUSIVAMENTE all'ultimo anno disponibile (anno piu recente in yearsData).
+   Tutti i ratio (current ratio, quick ratio, cash ratio, ecc.) vanno commentati riferendosi a quell'anno.
+   NON attribuire i KPI ad anni precedenti. Se yearsData contiene 2022, 2023, 2024, i KPI sono del 2024.
+
+2. GESTIONE gseResidual:
+   - Se gseResidual.value e null: il documento GSE non e stato allegato o l'importo non e stato trovato.
+     In questo caso NON commentare alcun "residuo GSE" nei paragrafi analisiLiquidita e commentoCopertura.
+     Scrivi invece che l'importo residuo GSE non e disponibile nei documenti analizzati.
+   - Se gseResidual.value e un numero (anche 0): usa quel valore nei confronti.
+   - NON inventare un importo residuo GSE se il campo e null.
+
+3. GESTIONE quick ratio con rimanenze null:
+   Se rimanenze.value e null nell'ultimo anno, il quick ratio non e calcolabile in modo preciso.
+   In questo caso commenta: il quick ratio non e determinabile con precisione per assenza della voce
+   rimanenze nel bilancio; l'analisi della liquidita si basa su current ratio e cash ratio.
+   Non scrivere "quick ratio non disponibile" senza spiegare il motivo.
+
+4. TREND RICAVI - usa TUTTI gli anni presenti in yearsData in ordine cronologico.
+   Cita i valori numerici con l'anno corrispondente. Non omettere anni disponibili.
+
+Redigi una relazione tecnica professionale in italiano con le seguenti sezioni.
+Ogni sezione deve essere un paragrafo discorsivo di 4-6 righe, in terza persona, con stile formale da istruttoria GSE.
+
+1. "analisiRicavi": Analizza il trend dei ricavi per tutti gli anni disponibili (cita anno e valore per ciascuno).
+   Commenta l'andamento dell'utile netto. Se gseResidual.value non e null, confronta l'utile con il residuo GSE.
+   Evidenzia segnali positivi o negativi.
+
+2. "analisiLiquidita": Commenta current ratio, quick ratio e cash ratio riferiti all'ULTIMO ANNO (cita l'anno).
+   Se gseResidual.value non e null, valuta la capacita di copertura del residuo GSE con le disponibilita
+   immediate e il circolante. Se gseResidual.value e null, ometti il confronto col residuo e segnala l'assenza
+   del dato GSE.
+
+3. "accantonamenti": Analizza cosa emerge dalla checklist GSE/extraprofitti (debiti iscritti, accantonamenti,
+   riduzioni ricavi, contenziosi). Per ciascuna voce presente (presente: true), cita la fonteTestuale estratta.
+   Per le voci assenti, indica sinteticamente l'assenza. Valuta il rischio di passivita potenziali non rilevate.
+
+4. "conclusione": Giudizio sintetico finale sulla sostenibilita dell'esborso, segnali di rischio prevalenti,
+   raccomandazione operativa. Se gseResidual e null, basa il giudizio su liquidita e checklist.
+
 5. "esito": UNA SOLA delle tre stringhe esatte: "SOSTENIBILE" oppure "CAUTELA" oppure "RISCHIO ELEVATO"
-6. "commentoCopertura": Una frase breve (max 2 righe) che commenta sinteticamente gli indici di copertura cassa/attivo/patrimonio rispetto al residuo GSE.
+   Criteri orientativi (non vincolanti, usa il giudizio complessivo):
+   - SOSTENIBILE: liquidita adeguata (current ratio >= 1,2), nessuna passivita occulta, residuo GSE coperto
+   - CAUTELA: liquidita borderline (0,8 <= current ratio < 1,2) oppure voci checklist presenti ma gestibili
+   - RISCHIO ELEVATO: liquidita critica (current ratio < 0,8) oppure passivita occulte significative
 
-Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.`;
+6. "commentoCopertura": Una frase breve (max 2 righe) sui ratio di copertura cassa/attivo/patrimonio.
+   Se gseResidual.value e null: commenta solo la solidita patrimoniale e di cassa in termini assoluti,
+   senza riferirsi al residuo GSE.
+   Se gseResidual.value e un numero: commenta la copertura rispetto a quel valore.
+
+Rispondi SOLO con un oggetto JSON valido, senza markdown, senza backtick, senza testo fuori dal JSON.
+Struttura attesa:
+{
+  "analisiRicavi": "...",
+  "analisiLiquidita": "...",
+  "accantonamenti": "...",
+  "conclusione": "...",
+  "esito": "SOSTENIBILE" | "CAUTELA" | "RISCHIO ELEVATO",
+  "commentoCopertura": "..."
+}`;
 
 export const NARRATIVE_PROMPT_CUSTOM_DEFAULT = `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.
 Se i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.
