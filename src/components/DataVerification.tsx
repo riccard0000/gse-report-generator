@@ -4,7 +4,7 @@ import { TextLayer } from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
 import { computeDerivedFields } from '../kpiCalculator';
 import { BALANCE_SCHEMA, BalanceFieldKey, getSearchLabels } from '../balanceSchema';
-import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
+import { CheckCircle, ChevronRight, FileSearch, Layers } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
@@ -88,13 +88,27 @@ function parseIT(s: string): number {
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   const src = (field.rawLabel ?? field.rawText ?? '').trim();
   if (!src) return '';
-  let s = src
+  // Per campi multi-riga mostra solo la prima riga del rawText
+  const firstLine = src.split('\n')[0];
+  let s = firstLine
     .replace(/[\t]/g, ' ')
     .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
     .replace(/([\d])([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
     .replace(/\s{2,}/g, ' ')
     .trim();
   return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
+}
+
+// Controlla se un campo ha rawText multi-riga (campo aggregato da nota)
+function isMultiLineField(field: ExtractedField<unknown> | null | undefined): boolean {
+  if (!field?.rawText) return false;
+  return field.rawText.includes('\n');
+}
+
+// Conta le righe di un rawText multi-riga
+function countRawLines(field: ExtractedField<unknown>): number {
+  if (!field?.rawText) return 0;
+  return field.rawText.split('\n').filter(l => l.trim().length > 0).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +129,6 @@ interface PdfTextItem {
 
 // ---------------------------------------------------------------------------
 // Utility PDF: token fusi e righe
-// FIX Bug 3: rimossa la condizione che richiedeva /\d/ in entrambi i token
-// → le etichette pure (solo testo) vengono ora fuse correttamente.
 // ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -138,9 +150,6 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
       const next = sorted[j];
       const gap  = next.transform[4] - fusedX1;
       if (Math.abs(next.transform[5] - curY) > 3) break;
-      // FIX Bug 3: era: if (gap > 2) break + if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break
-      // Ora: fondiamo tutti i token adiacenti sulla stessa riga (gap <= 8px),
-      // indipendentemente dal fatto che contengano cifre o meno.
       if (gap > 8) break;
       fusedStr    += next.str;
       fusedX1      = next.transform[4] + next.width;
@@ -194,10 +203,7 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
 }
 
 // ---------------------------------------------------------------------------
-// Trova il token numerico sulla stessa riga di un item etichetta
-// FIX Bug 4: soglia numerica alzata da 2% a 5% con minimo assoluto 5
-//            per gestire valori piccoli (es. 36, 94) e arrotondamenti.
-// FIX Bug 6: rimosso lookbehind (?<=\d) non supportato da Safari/WebKit.
+// findNumericNeighbor
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -229,8 +235,6 @@ function findNumericNeighbor(
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
-      // FIX Bug 6: era .replace(/(?<=\d) (?=\d)/g, '') — lookbehind non supportato da Safari.
-      // Sostituito con una regex compatibile che rimuove spazi tra cifre.
       const cleaned = it.str.replace(/(\d) (\d)/g, '$1$2');
       const parsed  = parseIT(cleaned);
       if (!isNaN(parsed)) {
@@ -238,8 +242,6 @@ function findNumericNeighbor(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    // FIX Bug 4: era Math.max(1, absVal*0.02) — troppo stretto per valori piccoli.
-    // Ora: 5% con minimo assoluto 5, per gestire arrotondamenti e valori ≤100.
     const threshold = Math.max(5, absVal * 0.05);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
@@ -259,7 +261,7 @@ function findNumericNeighbor(
 }
 
 // ---------------------------------------------------------------------------
-// matchLabelInPage — 6 livelli di matching
+// matchLabelInPage
 // ---------------------------------------------------------------------------
 function matchLabelInPage(
   items: PdfTextItem[],
@@ -332,23 +334,89 @@ function matchLabelInPage(
 }
 
 // ---------------------------------------------------------------------------
-// RICERCA SCHEMA-FIRST
+// findAllMatchesForPrefix — usata per campi multi-riga (rawLabel = prefisso)
+// Restituisce TUTTI i match nel PDF che iniziano con il prefisso dato.
+// ---------------------------------------------------------------------------
+function findAllMatchesForPrefix(
+  items: PdfTextItem[],
+  rowTokens: PdfTextItem[],
+  prefix: string,
+): PdfTextItem[] {
+  const needle = prefix.toLowerCase().trim();
+  if (!needle) return [];
+  const seen = new Set<number>();
+  const result: PdfTextItem[] = [];
+  for (const pool of [rowTokens, items]) {
+    for (const it of pool) {
+      const key = it.transform[4] * 10000 + it.transform[5];
+      if (seen.has(key)) continue;
+      const txt = it.str.toLowerCase().replace(/\s+/g, ' ').trimStart();
+      if (txt.startsWith(needle)) {
+        seen.add(key);
+        result.push(it);
+      }
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// findBboxForField — SCHEMA-FIRST + supporto MULTI-RIGA
 // ---------------------------------------------------------------------------
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   fieldKey: BalanceFieldKey | null,
   field: ExtractedField<unknown>,
-): Promise<{ bboxes: BBox[] } | null> {
+): Promise<{ bboxes: BBox[]; isMultiSum: boolean } | null> {
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
     const rows    = buildRowTokens(items);
     const fv      = typeof field.value === 'number' ? field.value : null;
+    const rawLabel = (field.rawLabel ?? '').trim();
+    const rawText  = (field.rawText  ?? '').trim();
 
+    // ── PERCORSO MULTI-RIGA ─────────────────────────────────────────────────
+    // Attivato quando rawText contiene almeno un \n (campo aggregato da nota)
+    if (rawText.includes('\n')) {
+      const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const allBboxes: BBox[] = [];
+
+      for (const line of lines) {
+        // Estrae il testo-etichetta della riga (tutto prima del primo \t o del primo numero)
+        const labelPart = line.split('\t')[0].trim();
+        if (!labelPart) continue;
+
+        const match = matchLabelInPage(items, rows, labelPart, null);
+        if (!match) continue;
+
+        // bbox dell'etichetta
+        allBboxes.push(match.labelBbox);
+
+        // bbox del valore numerico sulla stessa riga (se presente)
+        const { numBbox } = findNumericNeighbor(items, match.item, null);
+        if (numBbox) allBboxes.push(numBbox);
+      }
+
+      // Fallback: se non abbiamo trovato nulla riga per riga,
+      // usa il prefisso rawLabel per trovare tutte le occorrenze
+      if (allBboxes.length === 0 && rawLabel) {
+        const matches = findAllMatchesForPrefix(items, rows, rawLabel);
+        for (const m of matches) {
+          const tf = m.transform;
+          allBboxes.push({ x0: tf[4], y0: tf[5], x1: tf[4] + m.width, y1: tf[5] + m.height });
+        }
+      }
+
+      if (allBboxes.length > 0) return { bboxes: allBboxes, isMultiSum: true };
+      return null;
+    }
+
+    // ── PERCORSO SINGOLA RIGA (logica esistente) ─────────────────────────────
     const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
-    const aiLabel      = (field.rawLabel ?? '').trim();
+    const aiLabel      = rawLabel;
     const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
       ? [...schemaLabels, aiLabel]
       : schemaLabels;
@@ -363,18 +431,16 @@ async function findBboxForField(
       if (!match) continue;
 
       const { numBbox } = findNumericNeighbor(items, match.item, fv);
-
       if (numBbox !== null) {
-        return { bboxes: [match.labelBbox, numBbox] };
+        return { bboxes: [match.labelBbox, numBbox], isMultiSum: false };
       }
-
       if (!lastTextOnlyMatch) {
         lastTextOnlyMatch = { labelBbox: match.labelBbox, item: match.item };
       }
     }
 
     if (lastTextOnlyMatch) {
-      return { bboxes: [lastTextOnlyMatch.labelBbox] };
+      return { bboxes: [lastTextOnlyMatch.labelBbox], isMultiSum: false };
     }
 
     return null;
@@ -471,6 +537,7 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
 // ---------------------------------------------------------------------------
 const HIGHLIGHT_LABEL_COLOR     = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
 const HIGHLIGHT_VALUE_COLOR     = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
+const HIGHLIGHT_MULTIROW_COLOR  = { bg: 'rgba(139,92,246,0.20)',  border: 'rgba(139,92,246,0.85)' };
 const HIGHLIGHT_CHECKLIST_COLOR = { bg: 'rgba(239,68,68,0.18)',   border: 'rgba(239,68,68,0.85)' };
 
 interface ActiveHighlight {
@@ -518,9 +585,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     if (!hl || hl.bboxes.length === 0) return;
     hl.bboxes.forEach((bbox, idx) => {
       if (isBboxEmpty(bbox)) return;
-      const colors = hl.isChecklist
-        ? HIGHLIGHT_CHECKLIST_COLOR
-        : idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
+      let colors: { bg: string; border: string };
+      if (hl.isChecklist) {
+        colors = HIGHLIGHT_CHECKLIST_COLOR;
+      } else if (hl.isMultiSum) {
+        // Alterna viola per label e verde per valore, su ogni coppia
+        colors = idx % 2 === 0 ? HIGHLIGHT_MULTIROW_COLOR : HIGHLIGHT_VALUE_COLOR;
+      } else {
+        colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
+      }
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
       const x = Math.min(ax, bx);
@@ -542,12 +615,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     });
   }, []);
 
-  // FIX Bug 5: se cssViewportRef è ancora null (rendering in corso),
-  // ritenta con requestAnimationFrame fino a che il viewport è disponibile.
   const drawHighlightsOnly = useCallback((hl: ActiveHighlight | null) => {
     const vp = cssViewportRef.current;
     if (!vp) {
-      // Viewport non ancora pronto: aspetta il prossimo frame e riprova
       requestAnimationFrame(() => {
         const vp2 = cssViewportRef.current;
         if (vp2) drawHighlights(hl, vp2);
@@ -664,9 +734,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   }, []);
 
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
+
+  // Legenda in fondo al viewer
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
     if (highlight.isChecklist) return [{ color: HIGHLIGHT_CHECKLIST_COLOR.border, name: 'Fonte checklist' }];
+    if (highlight.isMultiSum) {
+      return [{
+        color: HIGHLIGHT_MULTIROW_COLOR.border,
+        name: `${visibleBboxes.length} elementi evidenziati (campo multi-riga)`,
+      }];
+    }
     const items = [];
     if (visibleBboxes[0]) items.push({ color: HIGHLIGHT_LABEL_COLOR.border, name: 'Etichetta' });
     if (visibleBboxes[1]) items.push({ color: HIGHLIGHT_VALUE_COLOR.border, name: 'Valore' });
@@ -785,13 +863,20 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     const color = HIGHLIGHT_COLORS[fileIdx] ?? HIGHLIGHT_COLORS[0];
     if (!field?.page) { setActiveHighlight(null); return; }
 
+    // Placeholder highlight immediato mentre aspettiamo il calcolo bbox
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
       const result = await findBboxForField(doc, field.page, fieldKey, field);
       if (!result) return;
-      setActiveHighlight({ page: field.page, bboxes: result.bboxes, segmentNames: [], color, isMultiSum: false });
+      setActiveHighlight({
+        page:         field.page,
+        bboxes:       result.bboxes,
+        segmentNames: [],
+        color,
+        isMultiSum:   result.isMultiSum,
+      });
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
@@ -911,11 +996,14 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 </div>
 
                 {YEAR_FIELDS.map(({ key, label }) => {
-                  const field     = year[key] as ExtractedField<number>;
-                  const isUnavail = field?.value === null && !!field?.rawText;
-                  const hasPage   = !!field?.page;
-                  const caption   = field ? captionText(field) : '';
+                  const field      = year[key] as ExtractedField<number>;
+                  const isUnavail  = field?.value === null && !!field?.rawText;
+                  const hasPage    = !!field?.page;
+                  const isMultiRow = isMultiLineField(field);
+                  const rowCount   = isMultiRow ? countRawLines(field) : 0;
+                  const caption    = field ? captionText(field) : '';
                   const schemaHint = BALANCE_SCHEMA[key]?.primary ?? '';
+
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -923,6 +1011,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         {hasPage && (
                           <span className="inline-flex items-center gap-0.5 text-[9px] font-medium text-slate-400">
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
+                          </span>
+                        )}
+                        {isMultiRow && (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-violet-600 bg-violet-50 border border-violet-200 rounded px-1 py-0.5">
+                            <Layers className="w-2.5 h-2.5" /> multi-riga
                           </span>
                         )}
                         {isUnavail && (
@@ -933,7 +1026,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         value={field?.value}
                         isUnavailable={isUnavail}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          isUnavail
+                          isMultiRow
+                            ? 'border-violet-200 bg-violet-50 text-violet-800 focus:ring-violet-300 cursor-pointer font-semibold'
+                            : isUnavail
                             ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
                             : hasPage
                             ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
@@ -942,8 +1037,19 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         onFocus={() => handleFieldFocus(key, field, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
-                      {caption && (
+                      {/* Riga Σ per campi multi-riga */}
+                      {isMultiRow && field?.value !== null && field?.value !== undefined && (
+                        <p className="mt-0.5 text-[10px] text-violet-600 font-semibold flex items-center gap-1">
+                          <Layers className="w-3 h-3" />
+                          &Sigma;&nbsp;=&nbsp;&euro;&nbsp;{formatIT(field.value)}
+                          <span className="text-violet-400 font-normal">({rowCount}&nbsp;voci)</span>
+                        </p>
+                      )}
+                      {caption && !isMultiRow && (
                         <p className="mt-0.5 text-[10px] text-slate-400 italic" title={schemaHint}>&laquo;{caption}&raquo;</p>
+                      )}
+                      {caption && isMultiRow && (
+                        <p className="mt-0.5 text-[10px] text-violet-400 italic" title={schemaHint}>&laquo;{caption}&raquo;</p>
                       )}
                     </div>
                   );
