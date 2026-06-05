@@ -80,29 +80,44 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
+/**
+ * Restituisce la stringa da mostrare come caption sotto il campo.
+ * Usa rawLabel (verbatim, senza numeri) come sorgente primaria;
+ * se assente, ricade su rawText con normalizzazione.
+ */
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
-  const src = (field.rawLabel?.trim()) || field.rawText?.trim() || '';
+  // rawLabel è string | null — sorgente primaria
+  if (field.rawLabel) {
+    const s = field.rawLabel.trim();
+    return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
+  }
+  // fallback: rawText con normalizzazione spazi e separazione testo/numeri
+  const src = field.rawText?.trim();
   if (!src) return '';
-  let s = field.rawLabel
-    ? src
-    : src
-        .replace(/[\t]/g, ' ')
-        .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
-        .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
+  let s = src
+    .replace(/[\t]/g, ' ')
+    .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
   return s;
 }
 
+/**
+ * Restituisce il testo da usare come chiave di ricerca nel PDF.
+ * Usa rawLabel (verbatim) come primario; se null ricade su rawText
+ * ripulito dai numeri.
+ */
 function lookupLabel(field: ExtractedField<unknown>): string {
-  if (field.rawLabel?.trim()) return field.rawLabel.trim();
-  const s = (field.rawText || '')
+  // rawLabel è string | null dopo il refactoring — no optional chaining
+  if (field.rawLabel) return field.rawLabel.trim();
+  // fallback: rawText senza numeri
+  return (field.rawText ?? '')
     .replace(/[\t]/g, ' ')
     .replace(/-?[\d][\d.,]*/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
-  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -818,7 +833,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     fileIdx: number,
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
-    if (!field?.page || (!field?.rawText && !field?.rawLabel)) { setActiveHighlight(null); return; }
+    // rawLabel è string | null — il controllo è su null o stringa vuota
+    if (!field?.page || (!field.rawText && !field.rawLabel)) { setActiveHighlight(null); return; }
 
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
@@ -837,7 +853,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
-  // FIX TS2345: fonteTestuale accetta anche null (il tipo del campo nel modello dati)
   const handleChecklistClick = useCallback(async (
     fonteTestuale: string | null | undefined,
     page: number | null | undefined,

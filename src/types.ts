@@ -1,26 +1,25 @@
 /**
- * Struttura base per un campo estratto da PDF
- */
-export interface FieldValue {
-  value: string | number | null;
-  page: number | null;
-  rawText: string | null;
-  rawLabel?: string | null;
-  bbox: { x0: number; y0: number; x1: number; y1: number } | null;
-}
-
-/**
- * Versione tipizzata di FieldValue per campi specifici (es. solo numeri)
- * rawText  = riga completa restituita dall'AI (può contenere più numeri)
- * rawLabel = solo la parte testuale dell'etichetta, senza cifre (usata per l'highlight)
+ * ExtractedField — campo estratto da PDF tramite modello AI text-only.
+ *
+ * Le bounding box NON vengono richieste al modello AI:
+ * vengono calcolate a runtime da DataVerification.tsx tramite pdfjs-dist,
+ * usando rawLabel come chiave di ricerca primaria nel testo della pagina.
+ *
+ * Semantica dei campi:
+ *   value    — valore dell'anno di riferimento del documento (colonna sinistra)
+ *   page     — numero pagina 1-based dove si trova la voce
+ *   rawText  — riga COMPLETA verbatim dal documento, con separatori \t
+ *              es: "Totale valore della produzione\t818.547\t778.956"
+ *   rawLabel — SOLO il testo dell'etichetta, verbatim, senza cifre né tab
+ *              es: "Totale valore della produzione"
+ *              Usato come chiave di ricerca primaria nel PDF viewer.
  */
 export interface ExtractedField<T = string | number> {
   value: T | null;
   page: number | null;
   rawText: string | null;
-  /** Solo il testo dell'etichetta, senza numeri — usato per localizzare la riga nel PDF */
-  rawLabel?: string | null;
-  bbox?: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** Testo verbatim dell'etichetta (no numeri, no tab) — chiave di ricerca nel PDF viewer */
+  rawLabel: string | null;
 }
 
 export interface FinancialYearData {

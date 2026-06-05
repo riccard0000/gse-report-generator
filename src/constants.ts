@@ -41,23 +41,34 @@ Mappe voci di bilancio (schema italiano CE/SP):
 - "fondoRischiOneri" = B) Fondi per rischi e oneri SP
 
 Per ciascun valore numerico includi SEMPRE questi 4 campi:
-- "value": numero intero (0 se assente, null se non trovato)
-- "page": numero di pagina del PDF (OBBLIGATORIO — non lasciare null se il valore è stato trovato)
-- "rawText": la riga testuale COMPLETA del documento così come appare (etichetta + tutti i numeri presenti sulla riga).
+- "value": numero intero corrispondente all'anno di riferimento di QUESTO documento.
+  REGOLA CRITICA: nei prospetti a doppia colonna (anno corrente | anno precedente),
+  estrai SEMPRE il valore della colonna di SINISTRA (anno corrente del documento).
+  Usa 0 se la voce è esplicitamente zero nel documento, null se la voce è assente.
+- "page": numero di pagina del PDF (OBBLIGATORIO — non lasciare null se il valore è stato trovato).
+- "rawText": copia LETTERALE della riga completa del documento, esattamente come appare
+  nel testo fornito, inclusi separatori \t e TUTTI i numeri sulla riga
+  (sia anno corrente che anno precedente se entrambi presenti).
+  NON normalizzare spazi, NON rimuovere tabulazioni, NON parafrasare.
   Esempio: "Totale valore della produzione\t818.547\t778.956"
-- "rawLabel": SOLO il testo dell'etichetta/voce, SENZA NESSUN NUMERO, SENZA TABULAZIONI, SENZA PUNTEGGIATURA NUMERICA.
-  REGOLA CRITICA: rawLabel deve contenere SOLO parole alfabetiche (lettere, spazi, apostrofi).
-  NESSUNA cifra, NESSUN punto decimale, NESSUNA virgola numerica, NESSUN trattino numerico.
-  Esempi corretti:
+- "rawLabel": copia LETTERALE del solo testo dell'etichetta/voce, esattamente come
+  appare nel documento. Preserva maiuscole, minuscole, caratteri accentati italiani
+  (à, è, é, ì, ò, ù), apostrofi e parentesi alfabetiche.
+  REGOLA: nessuna cifra, nessun separatore numerico (. , -), nessun tab.
+  Questo campo è usato dal sistema per localizzare la riga nel PDF visualizzato:
+  una copia imprecisa impedisce l'evidenziazione automatica nel viewer.
+  Esempi CORRETTI:
     riga "Totale valore della produzione   818.547   778.956" → rawLabel = "Totale valore della produzione"
     riga "B) Fondi per rischi e oneri   12.000   9.500"      → rawLabel = "Fondi per rischi e oneri"
     riga "IV - Disponibilità liquide    5.320"               → rawLabel = "Disponibilità liquide"
     riga "C17) Interessi e oneri fin.   (3.200)"            → rawLabel = "Interessi e oneri finanziari"
   Esempi ERRATI (non fare mai):
-    rawLabel = "818.547"  ← contiene cifre
-    rawLabel = "A - B"    ← contiene trattino numerico
-    rawLabel = "21."      ← solo numeri
-  Per formule/calcoli (es. EBITDA stimato), rawLabel = nome della voce principale (es. "Differenza tra valore e costi della produzione").
+    rawLabel = "Totale Valore Della Produzione"  ← maiuscole alterate
+    rawLabel = "Disponibilita liquide"           ← accento rimosso
+    rawLabel = "818.547"                         ← solo numeri
+    rawLabel = "A - B"                           ← trattino numerico
+  Per formule/calcoli (es. EBITDA stimato), rawLabel = nome della voce principale
+  (es. "Differenza tra valore e costi della produzione").
 
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
