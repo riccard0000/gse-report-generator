@@ -96,8 +96,8 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   if (!src) return '';
   let s = src
     .replace(/[\t]/g, ' ')
-    .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
-    .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
+    .replace(/([A-Za-z\u00c0-\u00ff)])([\d])/g, '$1 $2')
+    .replace(/([\d])([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
@@ -108,14 +108,18 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
  * Restituisce il testo da usare come chiave di ricerca nel PDF.
  * Usa rawLabel (verbatim) come primario; se null ricade su rawText
  * ripulito dai numeri.
+ *
+ * FIX #3: la regex di rimozione numeri ora copre anche numeri con spazi
+ * interni (es. "145 786") e pulisce correttamente spazi multipli residui.
  */
 function lookupLabel(field: ExtractedField<unknown>): string {
   // rawLabel è string | null dopo il refactoring — no optional chaining
   if (field.rawLabel) return field.rawLabel.trim();
-  // fallback: rawText senza numeri
+  // FIX #3: rimuove numeri con possibili spazi interni (es. "145 786")
+  // e normalizza gli spazi multipli risultanti
   return (field.rawText ?? '')
     .replace(/[\t]/g, ' ')
-    .replace(/-?[\d][\d.,]*/g, '')
+    .replace(/-?[\d][\d.,\s]*/g, ' ')   // FIX #3: aggiunto \s per numeri "145 786"
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -265,7 +269,9 @@ function findNumericNeighborForItem(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    const threshold = Math.max(10, absVal * 0.05);
+    // FIX #4: soglia ridotta da max(10, 5%) a max(1, 2%) per evitare
+    // false corrispondenze su valori piccoli (interessi, INPS, ecc.)
+    const threshold = Math.max(1, absVal * 0.02);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
       return {
@@ -373,13 +379,24 @@ async function findSingleBboxWithItem(
   };
 }
 
+/**
+ * FIX #2: PAGE_OFFSET compensa la differenza tra pagina logica (numerazione
+ * stampata nel documento, usata nel mock data) e pagina fisica del PDF
+ * (1-based, copertina = pagina fisica 1 non numerata).
+ * Il bilancio ha sempre la copertina come pagina fisica 1, quindi
+ * pagina logica N corrisponde a pagina fisica N+1.
+ */
+const PAGE_OFFSET = 1;
+
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
   field: ExtractedField<unknown>,
 ): Promise<MatchResult | null> {
   try {
-    const page    = await pdf.getPage(pageNum);
+    // FIX #2: converti pagina logica → pagina fisica
+    const physicalPage = pageNum + PAGE_OFFSET;
+    const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
     const fv      = typeof field.value === 'number' ? field.value : null;
@@ -405,6 +422,7 @@ async function findBboxForField(
 /**
  * Cerca la bbox di un testo libero (fonteTestuale della checklist).
  * Cerca prima nei singoli span, poi nelle righe intere fuse.
+ * FIX #2 applicato anche qui per la pagina della checklist.
  */
 async function findBboxForFreeText(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -412,7 +430,9 @@ async function findBboxForFreeText(
   text: string,
 ): Promise<BBox[]> {
   try {
-    const page    = await pdf.getPage(pageNum);
+    // FIX #2: converti pagina logica → pagina fisica
+    const physicalPage = pageNum + PAGE_OFFSET;
+    const page    = await pdf.getPage(physicalPage);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
 
@@ -556,13 +576,16 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       const colors = hl.isChecklist
         ? HIGHLIGHT_CHECKLIST_COLOR
         : idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
+
+      // FIX #5: il viewport è costruito con scale=BASE_SCALE (senza DPR),
+      // quindi convertToViewportPoint restituisce coordinate CSS dirette.
+      // NON dividere per dpr — era il bug principale che spostava i box.
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
-      const dpr = window.devicePixelRatio || 1;
-      const x = Math.min(ax, bx) / dpr;
-      const y = Math.min(ay, by) / dpr;
-      const w = Math.abs(bx - ax) / dpr;
-      const h = Math.abs(by - ay) / dpr;
+      const x = Math.min(ax, bx);
+      const y = Math.min(ay, by);
+      const w = Math.abs(bx - ax);
+      const h = Math.abs(by - ay);
 
       const div = document.createElement('div');
       div.style.cssText = [
@@ -605,16 +628,25 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
       const dpr        = window.devicePixelRatio || 1;
       const BASE_SCALE = 1.5;
-      const viewport   = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
 
-      canvas.width  = viewport.width;
-      canvas.height = viewport.height;
-      const cssW = viewport.width  / dpr;
-      const cssH = viewport.height / dpr;
+      // FIX #6: viewport per il canvas usa scale*dpr (alta risoluzione fisica)
+      const canvasViewport = pdfPage.getViewport({ scale: BASE_SCALE * dpr });
+      // FIX #5 + #6: viewport CSS (BASE_SCALE puro) usato per:
+      //   - dimensioni CSS del canvas
+      //   - textLayer (coordinate CSS)
+      //   - hlLayer (coordinate CSS)
+      //   - drawHighlights (convertToViewportPoint → CSS)
+      const cssViewport = pdfPage.getViewport({ scale: BASE_SCALE });
+
+      canvas.width  = canvasViewport.width;
+      canvas.height = canvasViewport.height;
+      const cssW = cssViewport.width;
+      const cssH = cssViewport.height;
       canvas.style.width  = `${cssW}px`;
       canvas.style.height = `${cssH}px`;
       pageCssSize.current = { w: cssW, h: cssH };
 
+      // FIX #6: textLayer usa cssViewport (stessa scala delle coordinate bbox)
       tlDiv.style.width  = `${cssW}px`;
       tlDiv.style.height = `${cssH}px`;
       tlDiv.innerHTML    = '';
@@ -625,27 +657,29 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
       }
 
       const ctx  = canvas.getContext('2d')!;
-      const task = pdfPage.render({ canvasContext: ctx, viewport });
+      // Render canvas ad alta risoluzione (fisica)
+      const task = pdfPage.render({ canvasContext: ctx, viewport: canvasViewport });
       renderTaskRef.current = task;
       await task.promise;
       renderTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
 
-      const textViewport = pdfPage.getViewport({ scale: BASE_SCALE });
-      const textContent  = await pdfPage.getTextContent();
+      const textContent = await pdfPage.getTextContent();
       if (seq !== renderSeqRef.current) return;
 
+      // FIX #6: TextLayer usa cssViewport per coordinate CSS corrette
       const tl = new TextLayer({
         textContentSource: textContent,
         container: tlDiv,
-        viewport: textViewport,
+        viewport: cssViewport,
       });
       textLayerTaskRef.current = tl;
       await tl.render();
       textLayerTaskRef.current = null;
       if (seq !== renderSeqRef.current) return;
 
-      if (hl && hl.page === page) drawHighlights(hl, viewport);
+      // FIX #5: passa cssViewport a drawHighlights (no DPR nelle coordinate)
+      if (hl && hl.page === page) drawHighlights(hl, cssViewport);
 
     } catch (e: unknown) {
       if ((e as { name?: string })?.name !== 'RenderingCancelledException')
@@ -827,6 +861,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
+  // FIX #1: colorIndex e fileIdx sono ora argomenti distinti.
+  // colorIndex: indice nell'array HIGHLIGHT_COLORS (cosmesi).
+  // fileIdx: indice in files[] per sapere quale PDF aprire.
   const handleFieldFocus = useCallback(async (
     field: ExtractedField<unknown> | null,
     colorIndex: number,
@@ -991,6 +1028,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                           isUnavail ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
                           : hasPage ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
                           : 'border-slate-200 focus:ring-slate-300'}`}
+                        // FIX #1: colorIndex=yearIdx (colore), fileIdx=yearIdx (file) — ora semanticamente distinti
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
