@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { TextLayer } from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
 import { computeDerivedFields } from '../kpiCalculator';
+import { BALANCE_SCHEMA, BalanceFieldKey, getSearchLabels } from '../balanceSchema';
 import { CheckCircle, ChevronRight, FileSearch } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -85,14 +86,10 @@ function parseIT(s: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers label/caption per ExtractedField
+// caption leggibile per il campo (usa rawLabel o rawText depurato)
 // ---------------------------------------------------------------------------
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
-  if (field.rawLabel) {
-    const s = field.rawLabel.trim();
-    return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
-  }
-  const src = field.rawText?.trim();
+  const src = (field.rawLabel ?? field.rawText ?? '').trim();
   if (!src) return '';
   let s = src
     .replace(/[\t]/g, ' ')
@@ -100,28 +97,13 @@ function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
     .replace(/([\d])([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
     .replace(/\s{2,}/g, ' ')
     .trim();
-  if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
-  return s;
-}
-
-function lookupLabel(field: ExtractedField<unknown>): string {
-  if (field.rawLabel) return field.rawLabel.trim();
-  return (field.rawText ?? '')
-    .replace(/[\t]/g, ' ')
-    .replace(/-?[\d][\d.,\s]*/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return s.length > maxLen ? s.slice(0, maxLen) + '\u2026' : s;
 }
 
 // ---------------------------------------------------------------------------
 // Tipi interni
 // ---------------------------------------------------------------------------
 interface BBox { x0: number; y0: number; x1: number; y1: number; }
-
-type MatchResult =
-  | { kind: 'single';    bboxes: BBox[];  segmentNames: string[] }
-  | { kind: 'formula';   bboxes: BBox[];  segmentNames: string[] }
-  | { kind: 'multi-sum'; bboxes: BBox[];  segmentNames: string[] };
 
 function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
@@ -135,7 +117,7 @@ interface PdfTextItem {
 }
 
 // ---------------------------------------------------------------------------
-// Utility PDF parsing
+// Utility PDF: token fusi e righe
 // ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -147,15 +129,15 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   const merged: PdfTextItem[] = [];
   let i = 0;
   while (i < sorted.length) {
-    const cur   = sorted[i];
-    const curY  = cur.transform[5];
+    const cur       = sorted[i];
+    const curY      = cur.transform[5];
     let fusedStr    = cur.str;
     let fusedX1     = cur.transform[4] + cur.width;
     let fusedHeight = cur.height;
     let j = i + 1;
     while (j < sorted.length) {
-      const next  = sorted[j];
-      const gap   = next.transform[4] - fusedX1;
+      const next = sorted[j];
+      const gap  = next.transform[4] - fusedX1;
       if (Math.abs(next.transform[5] - curY) > 3) break;
       if (gap > 2) break;
       if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break;
@@ -196,10 +178,10 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
   }
   rows.push(currentRow);
   return rows.map(row => {
-    const first  = row[0];
-    const last   = row[row.length - 1];
-    const x0     = first.transform[4];
-    const x1     = last.transform[4] + last.width;
+    const first   = row[0];
+    const last    = row[row.length - 1];
+    const x0      = first.transform[4];
+    const x1      = last.transform[4] + last.width;
     const fullStr = row.map(t => t.str).join(' ').replace(/\s{2,}/g, ' ');
     return {
       str: fullStr,
@@ -210,7 +192,10 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
   });
 }
 
-function findNumericNeighborForItem(
+// ---------------------------------------------------------------------------
+// Trova il token numerico sulla stessa riga di un item etichetta
+// ---------------------------------------------------------------------------
+function findNumericNeighbor(
   items: PdfTextItem[],
   labelItem: PdfTextItem,
   fieldValue: number | null | undefined,
@@ -229,7 +214,7 @@ function findNumericNeighborForItem(
   if (fieldValue !== null && fieldValue !== undefined) {
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
-    const exactMatch = pool.find(it => normalizeNumStr(it.str) === targetDigits);
+    const exactMatch   = pool.find(it => normalizeNumStr(it.str) === targetDigits);
     if (exactMatch) {
       const tf = exactMatch.transform;
       return {
@@ -264,94 +249,131 @@ function findNumericNeighborForItem(
   };
 }
 
-async function findSingleBboxWithItem(
+// ---------------------------------------------------------------------------
+// Cerca UNA singola stringa di ricerca nel PDF.
+// Restituisce il miglior item trovato + la sua bbox.
+// ---------------------------------------------------------------------------
+function matchLabelInPage(
   items: PdfTextItem[],
-  labelText: string,
-  fieldValue?: number | null,
-): Promise<{ bbox: BBox; item: PdfTextItem } | null> {
-  const seg = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!seg) return null;
+  rowTokens: PdfTextItem[],
+  searchStr: string,
+  fieldValue: number | null | undefined,
+): { labelBbox: BBox; item: PdfTextItem; numericDistance: number } | null {
+  const needle = searchStr.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!needle) return null;
+
+  // 1. Exact match su token singolo
   const exactSingle = items.filter(it =>
-    it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
+    it.str.toLowerCase().replace(/\s+/g, ' ').trim() === needle
   );
-  const rowTokens = buildRowTokens(items);
-  const exactRow  = rowTokens.filter(rt =>
-    rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg
+  // 2. Exact match su riga completa
+  const exactRow = rowTokens.filter(rt =>
+    rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === needle
   );
-  const keywords = seg
+  // 3. La riga inizia con la stringa cercata (es. "Totale attivo circolante (C) 449.155")
+  const startRow = rowTokens.filter(rt =>
+    rt.str.toLowerCase().replace(/\s+/g, ' ').trimStart().startsWith(needle)
+  );
+  // 4. Keyword fallback: TUTTE le keyword devono essere presenti (soglia alta)
+  const keywords = needle
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
-    .filter(w => w.length >= 3)
-    .slice(0, 5);
-  let candidates: PdfTextItem[] = [...exactSingle, ...exactRow];
-  if (candidates.length === 0 && keywords.length > 0) {
-    const threshold = Math.max(1, Math.ceil(keywords.length / 2));
-    const kwSingle = items.filter(it => {
-      const txt   = it.str.toLowerCase();
-      const count = keywords.filter(w => txt.includes(w)).length;
-      return count >= threshold;
-    });
-    const kwRow = rowTokens.filter(rt => {
-      const txt   = rt.str.toLowerCase();
-      const count = keywords.filter(w => txt.includes(w)).length;
-      return count >= threshold;
-    });
-    candidates = [...kwSingle, ...kwRow];
-    if (candidates.length === 0 && keywords[0]) {
-      const fbSingle = items.find(it => it.str.toLowerCase().includes(keywords[0]));
-      const fbRow    = rowTokens.find(rt => rt.str.toLowerCase().includes(keywords[0]));
-      if (fbSingle) candidates.push(fbSingle);
-      else if (fbRow) candidates.push(fbRow);
+    .filter(w => w.length >= 3);
+  const kwMatches: PdfTextItem[] = [];
+  if (keywords.length > 0) {
+    const strictThreshold = keywords.length; // tutte le keyword (non ceil/2)
+    for (const pool of [rowTokens, items]) {
+      for (const it of pool) {
+        const txt   = it.str.toLowerCase();
+        const count = keywords.filter(w => txt.includes(w)).length;
+        if (count >= strictThreshold) kwMatches.push(it);
+      }
+      if (kwMatches.length > 0) break;
     }
   }
+
+  // Unione candidati con priorità: exact > startRow > kwMatches
+  const candidates: PdfTextItem[] = [];
+  const seen = new Set<number>();
+  for (const it of [...exactSingle, ...exactRow, ...startRow, ...kwMatches]) {
+    const key = it.transform[4] * 10000 + it.transform[5];
+    if (!seen.has(key)) { seen.add(key); candidates.push(it); }
+  }
   if (candidates.length === 0) return null;
-  const pickBest = (pool: PdfTextItem[]): PdfTextItem => {
-    if (pool.length === 1 || fieldValue == null) return pool[0];
-    let bestDist = Infinity;
-    let best = pool[0];
-    for (const c of pool) {
-      const { numericDistance } = findNumericNeighborForItem(items, c, fieldValue);
-      if (numericDistance < bestDist) { bestDist = numericDistance; best = c; }
+
+  // Scegli il candidato con il token numerico più vicino al valore atteso
+  let bestCandidate: PdfTextItem | null = null;
+  let bestDist = Infinity;
+  let bestNumBbox: BBox | null = null;
+
+  for (const c of candidates) {
+    const { numBbox, numericDistance } = findNumericNeighbor(items, c, fieldValue);
+    if (numericDistance < bestDist) {
+      bestDist      = numericDistance;
+      bestCandidate = c;
+      bestNumBbox   = numBbox;
     }
-    return best;
-  };
-  const winner = pickBest(candidates);
-  const tf     = winner.transform;
+  }
+  // Se nessun candidato ha un valore numerico associato, prendi il primo
+  if (!bestCandidate) bestCandidate = candidates[0];
+
+  const tf = bestCandidate.transform;
   return {
-    bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + winner.width, y1: tf[5] + winner.height },
-    item: winner,
+    labelBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestCandidate.width, y1: tf[5] + bestCandidate.height },
+    item: bestCandidate,
+    numericDistance: bestDist,
+    // numBbox è usato fuori — lo ricalcoliamo dopo con il winner
+    ...(bestNumBbox ? {} : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
-// FIX #1: PAGE_OFFSET = 0
-// Il mock usa già pagine fisiche 1-based (SP=3, CE=4).
-// Il vecchio PAGE_OFFSET=1 sommava un ulteriore +1 cercando sulla pagina
-// sbagliata e non trovando mai nessuna bbox.
+// RICERCA SCHEMA-FIRST
+// Scorre getSearchLabels(key) in ordine.
+// Per ogni stringa: cerca nel PDF e verifica che ci sia un valore numerico
+// compatibile sulla stessa riga.
+// Si ferma alla prima stringa che soddisfa entrambe le condizioni.
+// Fallback finale: rawLabel dell'AI.
 // ---------------------------------------------------------------------------
-const PAGE_OFFSET = 0;
-
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
+  fieldKey: BalanceFieldKey | null,
   field: ExtractedField<unknown>,
-): Promise<MatchResult | null> {
+): Promise<{ bboxes: BBox[] } | null> {
   try {
-    const physicalPage = pageNum + PAGE_OFFSET;  // ora = pageNum (già fisico)
-    const page    = await pdf.getPage(physicalPage);
+    const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
+    const rows    = buildRowTokens(items);
     const fv      = typeof field.value === 'number' ? field.value : null;
-    const label   = lookupLabel(field);
-    if (!label) return null;
-    const r = await findSingleBboxWithItem(items, label, fv);
-    if (!r) return null;
-    const { numBbox } = findNumericNeighborForItem(items, r.item, fv);
-    return {
-      kind: 'single',
-      bboxes: numBbox ? [r.bbox, numBbox] : [r.bbox],
-      segmentNames: [label],
-    };
+
+    // Lista di stringhe candidate: schema XBRL + rawLabel AI come fallback
+    const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
+    const aiLabel      = (field.rawLabel ?? '').trim();
+    const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
+      ? [...schemaLabels, aiLabel]
+      : schemaLabels;
+
+    for (const searchStr of allLabels) {
+      if (!searchStr) continue;
+      const match = matchLabelInPage(items, rows, searchStr, fv);
+      if (!match) continue;
+
+      // Ricalcola il numBbox con il winner definitivo
+      const { numBbox } = findNumericNeighbor(items, match.item, fv);
+
+      // Accettiamo questo risultato se:
+      //   a) ha trovato un valore numerico sulla stessa riga (distanza finita), oppure
+      //   b) non abbiamo un valore atteso (fv == null) — ci basta il testo
+      if (numBbox !== null || fv === null) {
+        return {
+          bboxes: numBbox ? [match.labelBbox, numBbox] : [match.labelBbox],
+        };
+      }
+      // Altrimenti: trovato il testo ma nessun numero compatibile — proviamo la label successiva
+    }
+    return null;
   } catch {
     return null;
   }
@@ -363,35 +385,33 @@ async function findBboxForFreeText(
   text: string,
 ): Promise<BBox[]> {
   try {
-    const physicalPage = pageNum + PAGE_OFFSET;
-    const page    = await pdf.getPage(physicalPage);
+    const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
-    const words = text
+    const words   = text
       .toLowerCase()
       .replace(/[^\w\u00c0-\u00ff\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 4)
       .slice(0, 6);
     if (words.length === 0) return [];
-    const threshold = Math.max(1, Math.ceil(words.length * 0.5));
-    const matchedSingle: PdfTextItem[] = [];
-    for (const item of items) {
-      const txt   = item.str.toLowerCase();
-      const count = words.filter(w => txt.includes(w)).length;
-      if (count >= threshold) matchedSingle.push(item);
-    }
-    const rowTokens = buildRowTokens(items);
-    const matchedRow: PdfTextItem[] = [];
-    for (const rt of rowTokens) {
+    const threshold   = Math.max(1, Math.ceil(words.length * 0.5));
+    const rowTokens   = buildRowTokens(items);
+    const matchedRow  = rowTokens.filter(rt => {
       const txt   = rt.str.toLowerCase();
       const count = words.filter(w => txt.includes(w)).length;
-      if (count >= threshold) matchedRow.push(rt);
-    }
-    const matched = matchedSingle.length > 0 ? matchedSingle : matchedRow;
+      return count >= threshold;
+    });
+    const matched = matchedRow.length > 0
+      ? matchedRow
+      : items.filter(it => {
+          const txt   = it.str.toLowerCase();
+          const count = words.filter(w => txt.includes(w)).length;
+          return count >= threshold;
+        });
     if (matched.length === 0) {
-      const fb = items.find(it => it.str.toLowerCase().includes(words[0]))
-               ?? rowTokens.find(rt => rt.str.toLowerCase().includes(words[0]));
+      const fb = rowTokens.find(rt => rt.str.toLowerCase().includes(words[0]))
+               ?? items.find(it => it.str.toLowerCase().includes(words[0]));
       if (fb) return [{ x0: fb.transform[4], y0: fb.transform[5], x1: fb.transform[4] + fb.width, y1: fb.transform[5] + fb.height }];
       return [];
     }
@@ -531,14 +551,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     const page   = currentPageRef.current;
     const hl     = highlightRef.current;
     if (!pdf || !canvas || !tlDiv) return;
-    if (renderTaskRef.current) {
-      try { renderTaskRef.current.cancel(); } catch { /**/ }
-      renderTaskRef.current = null;
-    }
-    if (textLayerTaskRef.current) {
-      try { textLayerTaskRef.current.cancel(); } catch { /**/ }
-      textLayerTaskRef.current = null;
-    }
+    if (renderTaskRef.current) { try { renderTaskRef.current.cancel(); } catch { /**/ } renderTaskRef.current = null; }
+    if (textLayerTaskRef.current) { try { textLayerTaskRef.current.cancel(); } catch { /**/ } textLayerTaskRef.current = null; }
     try {
       const pdfPage = await pdf.getPage(page);
       if (seq !== renderSeqRef.current) return;
@@ -639,9 +653,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
-    if (highlight.isChecklist) {
-      return [{ color: HIGHLIGHT_CHECKLIST_COLOR.border, name: 'Fonte checklist' }];
-    }
+    if (highlight.isChecklist) return [{ color: HIGHLIGHT_CHECKLIST_COLOR.border, name: 'Fonte checklist' }];
     const items = [];
     if (visibleBboxes[0]) items.push({ color: HIGHLIGHT_LABEL_COLOR.border, name: 'Etichetta' });
     if (visibleBboxes[1]) items.push({ color: HIGHLIGHT_VALUE_COLOR.border, name: 'Valore' });
@@ -662,18 +674,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
           >Succ &#8250;</button>
         </div>
       </div>
-      <div
-        className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100"
-        style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-      >
+      <div className="flex-1 overflow-auto flex justify-center p-4 bg-slate-100"
+        style={{ userSelect: 'none', WebkitUserSelect: 'none' }}>
         <div ref={containerRef} className="relative shadow-2xl inline-block">
           <canvas ref={canvasRef} className="block" />
           <div ref={textLayerRef} className="pdfTextLayer"
-            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
-          />
+            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
           <div ref={hlLayerRef}
-            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
-          />
+            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
         </div>
       </div>
       {legendItems.length > 0 && (
@@ -692,17 +700,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Componente principale DataVerification
+// Definizione campi RAW con chiave tipizzata BalanceFieldKey
 // ---------------------------------------------------------------------------
-interface Props {
-  files: File[];
-  extractedData: ExtractedData;
-  onApprove: (updatedData: ExtractedData) => void;
-}
-
-// FIX #2: ebitda RIMOSSO da YEAR_FIELDS — è DerivedField, non ha page/rawLabel.
-// ammortamenti AGGIUNTO — è ExtractedField RAW con riga CE propria.
-const YEAR_FIELDS: { key: keyof FinancialYearData; label: string }[] = [
+const YEAR_FIELDS: { key: BalanceFieldKey; label: string }[] = [
   { key: 'ricavi',               label: 'Ricavi' },
   { key: 'ebit',                 label: 'EBIT' },
   { key: 'ammortamenti',         label: 'Ammortamenti' },
@@ -739,6 +739,15 @@ const HIGHLIGHT_COLORS = [
   'rgba(245,158,11,0.35)',
 ];
 
+// ---------------------------------------------------------------------------
+// Componente principale DataVerification
+// ---------------------------------------------------------------------------
+interface Props {
+  files: File[];
+  extractedData: ExtractedData;
+  onApprove: (updatedData: ExtractedData) => void;
+}
+
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
@@ -755,33 +764,23 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     return doc;
   }, []);
 
-  // FIX #3: guard isDerived — non tenta highlight su DerivedField (no page).
-  // Un DerivedField ha solo { value, formula } — nessun page, rawLabel, rawText.
+  // handleFieldFocus: usa schema-first via findBboxForField
   const handleFieldFocus = useCallback(async (
+    fieldKey: BalanceFieldKey,
     field: ExtractedField<unknown> | null,
-    colorIndex: number,
     fileIdx: number,
   ) => {
-    const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
-    // Se manca page o manca qualsiasi chiave di ricerca: nessun highlight
-    if (!field?.page || (!field.rawText && !field.rawLabel)) {
-      setActiveHighlight(null);
-      return;
-    }
-    // Placeholder per far scattare il cambio pagina nel viewer
+    const color = HIGHLIGHT_COLORS[fileIdx] ?? HIGHLIGHT_COLORS[0];
+    if (!field?.page) { setActiveHighlight(null); return; }
+
+    // Placeholder immediato per il cambio pagina
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-      const result = await findBboxForField(doc, field.page, field);
+      const result = await findBboxForField(doc, field.page, fieldKey, field);
       if (!result) return;
-      setActiveHighlight({
-        page: field.page,
-        bboxes: result.bboxes,
-        segmentNames: result.segmentNames,
-        color,
-        isMultiSum: false,
-      });
+      setActiveHighlight({ page: field.page, bboxes: result.bboxes, segmentNames: [], color, isMultiSum: false });
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
@@ -790,41 +789,19 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     page: number | null | undefined,
     fileIdx: number,
   ) => {
-    if (!fonteTestuale || !page || !files[fileIdx]) {
-      setActiveHighlight(null);
-      return;
-    }
-    setActiveHighlight({
-      page,
-      bboxes: [EMPTY_BBOX],
-      segmentNames: [],
-      color: 'rgba(239,68,68,0.35)',
-      isMultiSum: false,
-      isChecklist: true,
-    });
+    if (!fonteTestuale || !page || !files[fileIdx]) { setActiveHighlight(null); return; }
+    setActiveHighlight({ page, bboxes: [EMPTY_BBOX], segmentNames: [], color: 'rgba(239,68,68,0.35)', isMultiSum: false, isChecklist: true });
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
       const bboxes = await findBboxForFreeText(doc, page, fonteTestuale);
-      setActiveHighlight({
-        page,
-        bboxes: bboxes.length > 0 ? bboxes : [EMPTY_BBOX],
-        segmentNames: [],
-        color: 'rgba(239,68,68,0.35)',
-        isMultiSum: false,
-        isChecklist: true,
-      });
+      setActiveHighlight({ page, bboxes: bboxes.length > 0 ? bboxes : [EMPTY_BBOX], segmentNames: [], color: 'rgba(239,68,68,0.35)', isMultiSum: false, isChecklist: true });
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
-  // FIX #4: updateYearField ricalcola i DerivedField dopo ogni modifica RAW.
-  // Necessario quando l'utente modifica ebit o ammortamenti: ebitda deve
-  // aggiornarsi immediatamente senza attendere un nuovo ciclo di estrazione AI.
-  const updateYearField = (yearIdx: number, key: keyof FinancialYearData, value: number | null) => {
+  const updateYearField = (yearIdx: number, key: BalanceFieldKey, value: number | null) => {
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
-      // Applica la modifica al campo RAW
       (next.yearsData[yearIdx][key] as ExtractedField<number>).value = value;
-      // Ricalcola tutti i DerivedField dell'anno (ebitda = ebit + ammortamenti)
       computeDerivedFields(next.yearsData[yearIdx]);
       return next;
     });
@@ -887,8 +864,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
             const yearIdx = activeTab - 1;
             const year    = data.yearsData[yearIdx];
             if (!year) return null;
-
-            // ebitda è DerivedField: leggiamo value e formula direttamente
             const ebitdaField = year.ebitda as DerivedField<number>;
 
             return (
@@ -908,7 +883,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   />
                 </div>
 
-                {/* FIX #5: EBITDA in blocco separato SOLA LETTURA, prima dei campi RAW */}
+                {/* EBITDA — DerivedField sola lettura */}
                 <div>
                   <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
                     EBITDA
@@ -925,12 +900,14 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   )}
                 </div>
 
-                {/* Campi RAW — click attiva highlight nel PDF */}
+                {/* Campi RAW — schema-first highlight */}
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
                   const hasPage   = !!field?.page;
                   const caption   = field ? captionText(field) : '';
+                  // Mostra la label primaria dello schema come tooltip informativo
+                  const schemaHint = BALANCE_SCHEMA[key]?.primary ?? '';
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -954,16 +931,17 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                             ? 'border-slate-200 focus:ring-blue-300 cursor-pointer'
                             : 'border-slate-200 focus:ring-slate-300'
                         }`}
-                        onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
+                        onFocus={() => handleFieldFocus(key, field, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
                       {caption && (
-                        <p className="mt-0.5 text-[10px] text-slate-400 italic">&laquo;{caption}&raquo;</p>
+                        <p className="mt-0.5 text-[10px] text-slate-400 italic" title={schemaHint}>&laquo;{caption}&raquo;</p>
                       )}
                     </div>
                   );
                 })}
 
+                {/* Checklist GSE */}
                 <div className="mt-6 pt-4 border-t border-slate-200">
                   <div className="flex items-center gap-2 mb-3">
                     <FileSearch className="w-4 h-4 text-indigo-500" />
@@ -981,8 +959,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                       const badgeText  = isPres ? 'text-red-700'               : 'text-emerald-700';
                       const badgeLabel = isPres ? '\u26a0 Presente'            : '\u2713 Assente';
                       return (
-                        <div
-                          key={key}
+                        <div key={key}
                           className={`rounded-lg border p-3 ${badgeBg} ${hasSource ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`}
                           onClick={() => { if (hasSource) handleChecklistClick(item.fonteTestuale, item.page, yearIdx); }}
                           title={hasSource ? 'Clicca per evidenziare nel PDF' : undefined}
