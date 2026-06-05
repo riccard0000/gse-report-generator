@@ -837,8 +837,9 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     } catch { /**/ }
   }, [files, getPdfDoc]);
 
+  // FIX TS2345: fonteTestuale accetta anche null (il tipo del campo nel modello dati)
   const handleChecklistClick = useCallback(async (
-    fonteTestuale: string | undefined,
+    fonteTestuale: string | null | undefined,
     page: number | null | undefined,
     fileIdx: number,
   ) => {
