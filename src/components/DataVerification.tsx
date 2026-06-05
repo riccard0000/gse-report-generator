@@ -85,9 +85,6 @@ function parseIT(s: string): number {
   return parseFloat(trimmed) || 0;
 }
 
-// ---------------------------------------------------------------------------
-// caption leggibile per il campo (usa rawLabel o rawText depurato)
-// ---------------------------------------------------------------------------
 function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
   const src = (field.rawLabel ?? field.rawText ?? '').trim();
   if (!src) return '';
@@ -118,6 +115,8 @@ interface PdfTextItem {
 
 // ---------------------------------------------------------------------------
 // Utility PDF: token fusi e righe
+// FIX Bug 3: rimossa la condizione che richiedeva /\d/ in entrambi i token
+// → le etichette pure (solo testo) vengono ora fuse correttamente.
 // ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -139,8 +138,10 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
       const next = sorted[j];
       const gap  = next.transform[4] - fusedX1;
       if (Math.abs(next.transform[5] - curY) > 3) break;
-      if (gap > 2) break;
-      if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break;
+      // FIX Bug 3: era: if (gap > 2) break + if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break
+      // Ora: fondiamo tutti i token adiacenti sulla stessa riga (gap <= 8px),
+      // indipendentemente dal fatto che contengano cifre o meno.
+      if (gap > 8) break;
       fusedStr    += next.str;
       fusedX1      = next.transform[4] + next.width;
       fusedHeight  = Math.max(fusedHeight, next.height);
@@ -157,11 +158,9 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   return merged;
 }
 
-// FIX 1: Y_ROW_TOL alzato da 3 a 6 per catturare token sulla stessa riga
-// anche quando il font mixing causa variazioni Y di 4-5px
 function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
-  const Y_ROW_TOL = 6; // era 3
+  const Y_ROW_TOL = 6;
   const sorted = [...items].sort((a, b) => {
     const dy = b.transform[5] - a.transform[5];
     if (Math.abs(dy) > Y_ROW_TOL) return dy;
@@ -196,7 +195,9 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
 
 // ---------------------------------------------------------------------------
 // Trova il token numerico sulla stessa riga di un item etichetta
-// FIX 3: Y_TOL alzato da 5 a 8
+// FIX Bug 4: soglia numerica alzata da 2% a 5% con minimo assoluto 5
+//            per gestire valori piccoli (es. 36, 94) e arrotondamenti.
+// FIX Bug 6: rimosso lookbehind (?<=\d) non supportato da Safari/WebKit.
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -205,7 +206,7 @@ function findNumericNeighbor(
 ): { numBbox: BBox | null; numericDistance: number } {
   const labelY  = labelItem.transform[5];
   const labelX1 = labelItem.transform[4] + labelItem.width;
-  const Y_TOL   = 8; // era 5
+  const Y_TOL   = 8;
   const mergedItems = buildMergedTokens(items);
   const sameRow = mergedItems.filter(it => {
     const tf = it.transform;
@@ -228,13 +229,18 @@ function findNumericNeighbor(
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
-      const parsed = parseIT(it.str.replace(/(?<=\d) (?=\d)/g, ''));
+      // FIX Bug 6: era .replace(/(?<=\d) (?=\d)/g, '') — lookbehind non supportato da Safari.
+      // Sostituito con una regex compatibile che rimuove spazi tra cifre.
+      const cleaned = it.str.replace(/(\d) (\d)/g, '$1$2');
+      const parsed  = parseIT(cleaned);
       if (!isNaN(parsed)) {
         const dist = Math.abs(parsed - absVal);
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    const threshold = Math.max(1, absVal * 0.02);
+    // FIX Bug 4: era Math.max(1, absVal*0.02) — troppo stretto per valori piccoli.
+    // Ora: 5% con minimo assoluto 5, per gestire arrotondamenti e valori ≤100.
+    const threshold = Math.max(5, absVal * 0.05);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
       return {
@@ -253,15 +259,7 @@ function findNumericNeighbor(
 }
 
 // ---------------------------------------------------------------------------
-// Cerca UNA singola stringa di ricerca nel PDF.
-//
-// Livelli di matching in ordine decrescente di precisione:
-//   1. Exact match su token singolo
-//   2. Exact match su riga completa (rowToken)
-//   3. La riga inizia con la needle
-//   4. La riga contiene la needle come substring (FIX 2a — nuovo)
-//   5. La needle contiene la riga (label spezzata — FIX 2b — nuovo)
-//   6. Keyword fuzzy: almeno ceil(70%) delle keyword nella riga (FIX soglia)
+// matchLabelInPage — 6 livelli di matching
 // ---------------------------------------------------------------------------
 function matchLabelInPage(
   items: PdfTextItem[],
@@ -272,39 +270,30 @@ function matchLabelInPage(
   const needle = searchStr.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!needle) return null;
 
-  // 1. Exact match su token singolo
   const exactSingle = items.filter(it =>
     it.str.toLowerCase().replace(/\s+/g, ' ').trim() === needle
   );
-  // 2. Exact match su riga completa
   const exactRow = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trim() === needle
   );
-  // 3. La riga inizia con la needle (es. "Totale attivo 449.155")
   const startRow = rowTokens.filter(rt =>
     rt.str.toLowerCase().replace(/\s+/g, ' ').trimStart().startsWith(needle)
   );
-  // 4. La riga contiene la needle come substring (FIX 2a)
-  //    Cattura: "A) Valore della produzione" → needle "Totale valore della produzione"? No.
-  //    Cattura: riga="Totale valore della produzione 818.547" → needle="Totale valore della produzione" ✓
   const containsRow = rowTokens.filter(rt => {
     const rowStr = rt.str.toLowerCase().replace(/\s+/g, ' ');
     return rowStr.includes(needle);
   });
-  // 5. La needle contiene la riga come substring (FIX 2b)
-  //    Cattura label lunga spezzata: riga="Differenza tra valore e costi" ⊂ needle completa
   const needleContainsRow = rowTokens.filter(rt => {
     const rowStr = rt.str.toLowerCase().replace(/\s+/g, ' ').trim();
     return rowStr.length >= 8 && needle.includes(rowStr);
   });
-  // 6. Keyword fuzzy — soglia al 70% (FIX soglia, era 100%)
   const keywords = needle
     .replace(/[^a-z\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3);
   const kwMatches: PdfTextItem[] = [];
   if (keywords.length > 0) {
-    const threshold70 = Math.max(1, Math.ceil(keywords.length * 0.7)); // FIX: era keywords.length
+    const threshold70 = Math.max(1, Math.ceil(keywords.length * 0.7));
     for (const pool of [rowTokens, items]) {
       for (const it of pool) {
         const txt   = it.str.toLowerCase();
@@ -315,7 +304,6 @@ function matchLabelInPage(
     }
   }
 
-  // Unione candidati con priorità: exact > startRow > containsRow > needleContainsRow > kwMatches
   const candidates: PdfTextItem[] = [];
   const seen = new Set<number>();
   for (const it of [...exactSingle, ...exactRow, ...startRow, ...containsRow, ...needleContainsRow, ...kwMatches]) {
@@ -324,10 +312,8 @@ function matchLabelInPage(
   }
   if (candidates.length === 0) return null;
 
-  // Scegli il candidato con il token numerico più vicino al valore atteso
   let bestCandidate: PdfTextItem | null = null;
   let bestDist = Infinity;
-
   for (const c of candidates) {
     const { numericDistance } = findNumericNeighbor(items, c, fieldValue);
     if (numericDistance < bestDist) {
@@ -347,11 +333,6 @@ function matchLabelInPage(
 
 // ---------------------------------------------------------------------------
 // RICERCA SCHEMA-FIRST
-// Scorre getSearchLabels(key) in ordine.
-// Per ogni stringa: cerca nel PDF e verifica che ci sia un valore numerico
-// compatibile sulla stessa riga.
-// Si ferma alla prima stringa che soddisfa entrambe le condizioni.
-// Fallback finale: rawLabel dell'AI — accettato anche senza numero se è l'ultimo tentativo.
 // ---------------------------------------------------------------------------
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -366,7 +347,6 @@ async function findBboxForField(
     const rows    = buildRowTokens(items);
     const fv      = typeof field.value === 'number' ? field.value : null;
 
-    // Lista ordinata: schema XBRL → rawLabel AI come ultimo fallback
     const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
     const aiLabel      = (field.rawLabel ?? '').trim();
     const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
@@ -382,23 +362,17 @@ async function findBboxForField(
       const match = matchLabelInPage(items, rows, searchStr, fv);
       if (!match) continue;
 
-      // Ricalcola il numBbox con il winner definitivo
       const { numBbox } = findNumericNeighbor(items, match.item, fv);
 
       if (numBbox !== null) {
-        // Match completo: etichetta + numero
         return { bboxes: [match.labelBbox, numBbox] };
       }
 
-      // Testo trovato ma senza numero compatibile:
-      // salva come fallback e continua a provare le label successive
       if (!lastTextOnlyMatch) {
         lastTextOnlyMatch = { labelBbox: match.labelBbox, item: match.item };
       }
     }
 
-    // Nessuna label ha trovato il numero: usa il miglior testo trovato
-    // (fv===null significa che non abbiamo un valore atteso → il solo testo basta)
     if (lastTextOnlyMatch) {
       return { bboxes: [lastTextOnlyMatch.labelBbox] };
     }
@@ -568,9 +542,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
     });
   }, []);
 
+  // FIX Bug 5: se cssViewportRef è ancora null (rendering in corso),
+  // ritenta con requestAnimationFrame fino a che il viewport è disponibile.
   const drawHighlightsOnly = useCallback((hl: ActiveHighlight | null) => {
     const vp = cssViewportRef.current;
-    if (!vp) return;
+    if (!vp) {
+      // Viewport non ancora pronto: aspetta il prossimo frame e riprova
+      requestAnimationFrame(() => {
+        const vp2 = cssViewportRef.current;
+        if (vp2) drawHighlights(hl, vp2);
+      });
+      return;
+    }
     drawHighlights(hl, vp);
   }, [drawHighlights]);
 
@@ -911,7 +894,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   />
                 </div>
 
-                {/* EBITDA — DerivedField sola lettura */}
                 <div>
                   <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
                     EBITDA
@@ -928,7 +910,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   )}
                 </div>
 
-                {/* Campi RAW — schema-first highlight */}
                 {YEAR_FIELDS.map(({ key, label }) => {
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
@@ -968,7 +949,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   );
                 })}
 
-                {/* Checklist GSE */}
                 <div className="mt-6 pt-4 border-t border-slate-200">
                   <div className="flex items-center gap-2 mb-3">
                     <FileSearch className="w-4 h-4 text-indigo-500" />

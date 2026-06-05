@@ -136,13 +136,15 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       attivoCircolante: {
         value: 449155,
         page: 3,
-        rawLabel: "Totale attivo circolante",
+        rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t449.155\t389.360",
       },
+      // FIX Bug 2: rawLabel era 'esigibili entro...' (troppo corta e ambigua)
+      // Sostituita con l'etichetta completa del totale debiti correnti
       passivitaCorrenti: {
         value: 864978,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t864.978\t347.257",
       },
       disponibilitaLiquide: {
@@ -151,10 +153,12 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: "IV - Disponibilità liquide",
         rawText:  "IV - Disponibilità liquide\t254.282\t259.343",
       },
+      // FIX Bug 2: rawLabel era identica a passivitaCorrenti → match errato
+      // Sostituita con l'etichetta specifica dei crediti
       creditiEntro12Mesi: {
         value: 194873,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Crediti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t194.873\t130.027",
       },
       rimanenze: {
@@ -171,22 +175,18 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       },
 
       // ── Note integrative — pagina fisica 11 ──────────────────────────────
-      // Quota breve: mutuo BAPR classificato come corrente (scadenza entro 12m)
       debitiBancheBreve: {
         value: 370237,
         page: 11,
         rawLabel: "MUTUO BAPR",
         rawText:  "MUTUO BAPR\t1.870.237\t370.237\t1.500.000",
       },
-      // Quota M/L: non scorporabile dalla nota — non ha riga autonoma nel PDF
       debitiBancheML: {
         value: null,
         page: null,
         rawLabel: null,
         rawText:  null,
       },
-      // rit.lav.dip 1.246 + rit.lav.aut 12.653 + imp.sost.TFR 622
-      // + acc.IRES 31.561 + acc.IRAP 10.715 = 56.797
       debitiTributari: {
         value: 56797,
         page: 11,
@@ -200,8 +200,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  null,
       },
 
-      // ── CAMPO DERIVATO ────────────────────────────────────────────────────
-      // Inizializzato a null — verrà popolato da computeDerivedFields()
       ebitda: { value: null, formula: null },
     },
 
@@ -210,7 +208,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       year: "2023",
       sourceFileName: MOCK_FILE_NAMES[1],
 
-      // ── CE — pagina fisica 4 ──────────────────────────────────────────────
       ricavi: {
         value: 948319,
         page: 4,
@@ -242,7 +239,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  "Totale interessi e altri oneri finanziari\t94\t36",
       },
 
-      // ── SP — pagina fisica 3 ──────────────────────────────────────────────
       totaleAttivo: {
         value: 3320008,
         page: 3,
@@ -264,13 +260,13 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       attivoCircolante: {
         value: 187761,
         page: 3,
-        rawLabel: "Totale attivo circolante",
+        rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t187.761\t449.155",
       },
       passivitaCorrenti: {
         value: 733962,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t733.962\t864.978",
       },
       disponibilitaLiquide: {
@@ -282,7 +278,7 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       creditiEntro12Mesi: {
         value: 134545,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Crediti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t134.545\t194.873",
       },
       rimanenze: {
@@ -298,22 +294,18 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  "B) Fondi per rischi e oneri\t47.757\t47.757",
       },
 
-      // ── Note integrative — pagina fisica 12 ──────────────────────────────
-      // MUTUO BAPR estinto nel 2023: saldo finale = 0
       debitiBancheBreve: {
         value: 0,
         page: 12,
         rawLabel: "MUTUO BAPR",
         rawText:  "MUTUO BAPR\t370.237\t-\t-370.237",
       },
-      // Nessun mutuo attivo a fine 2023 — nessuna riga cercabile
       debitiBancheML: {
         value: 0,
         page: null,
         rawLabel: null,
         rawText:  null,
       },
-      // rit.lav.dip 1.265 + rit.lav.aut 2.912 + imp.sost.TFR 491 + c/IRES 19.900 = 24.568
       debitiTributari: {
         value: 24568,
         page: 12,
@@ -327,7 +319,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  null,
       },
 
-      // ── CAMPO DERIVATO ────────────────────────────────────────────────────
       ebitda: { value: null, formula: null },
     },
 
@@ -336,7 +327,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       year: "2024",
       sourceFileName: MOCK_FILE_NAMES[2],
 
-      // ── CE — pagina fisica 4 ──────────────────────────────────────────────
       ricavi: {
         value: 1137074,
         page: 4,
@@ -368,7 +358,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  "Totale interessi e altri oneri finanziari\t956\t94",
       },
 
-      // ── SP — pagina fisica 3 ──────────────────────────────────────────────
       totaleAttivo: {
         value: 3587108,
         page: 3,
@@ -390,13 +379,13 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       attivoCircolante: {
         value: 517437,
         page: 3,
-        rawLabel: "Totale attivo circolante",
+        rawLabel: "Totale attivo circolante (C)",
         rawText:  "Totale attivo circolante (C)\t517.437\t187.761",
       },
       passivitaCorrenti: {
         value: 629885,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Totale debiti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t629.885\t733.962",
       },
       disponibilitaLiquide: {
@@ -408,7 +397,7 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
       creditiEntro12Mesi: {
         value: 293145,
         page: 3,
-        rawLabel: "esigibili entro l'esercizio successivo",
+        rawLabel: "Crediti esigibili entro l'esercizio successivo",
         rawText:  "esigibili entro l'esercizio successivo\t293.145\t134.545",
       },
       rimanenze: {
@@ -417,7 +406,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
-      // Fondo azzerato nel 2024: SP riporta '-' come valore corrente
       fondoRischiOneri: {
         value: 0,
         page: 3,
@@ -425,8 +413,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  "B) Fondi per rischi e oneri\t-\t47.757",
       },
 
-      // ── Note integrative — pagina fisica 13 ──────────────────────────────
-      // Due mutui BCC (N.22659 + N.22701): la nota non scorpora breve/ML
       debitiBancheBreve: {
         value: null,
         page: null,
@@ -439,7 +425,6 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawLabel: null,
         rawText:  null,
       },
-      // rit.lav.dip 1.096 + rit.lav.aut 3.433 + imp.sost.TFR 508 + c/IRES 7.574 = 12.611
       debitiTributari: {
         value: 12611,
         page: 13,
@@ -453,16 +438,17 @@ export const MOCK_EXTRACTED_DATA: ExtractedData = {
         rawText:  null,
       },
 
-      // ── CAMPO DERIVATO ────────────────────────────────────────────────────
       ebitda: { value: null, formula: null },
     },
   ],
 
   checklist: {
-    debitiGSE:       { presente: false, dettaglio: "Nessun debito verso GSE iscritto nello stato patrimoniale negli esercizi 2022-2024.", fonteTestuale: "Nessuna occorrenza trovata nel documento per debiti GSE.", page: 0, sourceFileName: "" },
-    accantonamenti:  { presente: false, dettaglio: "Nessun accantonamento a fondo rischi collegato a extraprofitti o art. 15-bis D.L. 4/2022 rilevato nella nota integrativa.", fonteTestuale: "Nessuna occorrenza trovata nel documento per accantonamenti extraprofitti.", page: 0, sourceFileName: "" },
-    riduzioniRicavi: { presente: false, dettaglio: "Nessuna riduzione di ricavi per effetto della normativa sugli extraprofitti rilevata nel conto economico.", fonteTestuale: "Nessuna occorrenza trovata nel documento per riduzioni ricavi extraprofitti.", page: 0, sourceFileName: "" },
-    contenziosi:     { presente: false, dettaglio: "Nessun contenzioso o ricorso al TAR contro GSE menzionato nella nota integrativa.", fonteTestuale: "Nessuna occorrenza trovata nel documento per contenziosi GSE o ricorsi TAR.", page: 0, sourceFileName: "" },
+    // FIX Bug 1: page era 0 (falsy) → handleChecklistClick usciva subito.
+    // Sostituito con null su tutti i campi checklist senza fonte reale.
+    debitiGSE:       { presente: false, dettaglio: "Nessun debito verso GSE iscritto nello stato patrimoniale negli esercizi 2022-2024.", fonteTestuale: null, page: null, sourceFileName: null },
+    accantonamenti:  { presente: false, dettaglio: "Nessun accantonamento a fondo rischi collegato a extraprofitti o art. 15-bis D.L. 4/2022 rilevato nella nota integrativa.", fonteTestuale: null, page: null, sourceFileName: null },
+    riduzioniRicavi: { presente: false, dettaglio: "Nessuna riduzione di ricavi per effetto della normativa sugli extraprofitti rilevata nel conto economico.", fonteTestuale: null, page: null, sourceFileName: null },
+    contenziosi:     { presente: false, dettaglio: "Nessun contenzioso o ricorso al TAR contro GSE menzionato nella nota integrativa.", fonteTestuale: null, page: null, sourceFileName: null },
   },
 };
 
