@@ -5,16 +5,21 @@ export interface FieldValue {
   value: string | number | null;
   page: number | null;
   rawText: string | null;
+  rawLabel?: string | null;
   bbox: { x0: number; y0: number; x1: number; y1: number } | null;
 }
 
 /**
  * Versione tipizzata di FieldValue per campi specifici (es. solo numeri)
+ * rawText  = riga completa restituita dall'AI (può contenere più numeri)
+ * rawLabel = solo la parte testuale dell'etichetta, senza cifre (usata per l'highlight)
  */
 export interface ExtractedField<T = string | number> {
   value: T | null;
   page: number | null;
   rawText: string | null;
+  /** Solo il testo dell'etichetta, senza numeri — usato per localizzare la riga nel PDF */
+  rawLabel?: string | null;
   bbox?: { x0: number; y0: number; x1: number; y1: number } | null;
 }
 

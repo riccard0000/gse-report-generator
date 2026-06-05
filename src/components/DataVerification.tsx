@@ -81,37 +81,42 @@ function parseIT(s: string): number {
 }
 
 /**
- * Pulisce il rawText per la didascalia.
- * REGOLA: inserisce spazio solo tra una lettera/punteggiatura e una cifra,
- * MAI tra cifra e cifra (per non spezzare numeri come 160.638).
+ * Testo da mostrare nella didascalia sotto il campo.
+ * Usa rawLabel se disponibile (solo etichetta, senza numeri),
+ * altrimenti cade su rawText con pulizia leggera.
  */
-function cleanRawText(raw: string, maxLen = 60): string {
-  let s = raw
-    // spazio solo se il carattere precedente è una lettera o chiusura parentesi, NON una cifra o punto/virgola
-    .replace(/([A-Za-zÀ-ÿ)])(\d)/g, '$1 $2')
-    // spazio tra cifra e lettera (es. "638totale" → "638 totale")
-    .replace(/(\d)([A-Za-zÀ-ÿ(])/g, '$1 $2')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+function captionText(field: ExtractedField<unknown>, maxLen = 60): string {
+  // Preferisce rawLabel — già privo di numeri per costruzione
+  const src = (field.rawLabel?.trim()) || field.rawText?.trim() || '';
+  if (!src) return '';
+  // Rimuove numeri residui solo se stiamo usando rawText come fallback
+  let s = field.rawLabel
+    ? src
+    : src
+        .replace(/[\t]/g, ' ')
+        // spazio lettera→cifra e cifra→lettera (non cifra→cifra)
+        .replace(/([A-Za-z\u00c0-\u00ff)])(\d)/g, '$1 $2')
+        .replace(/(\d)([A-Za-z\u00c0-\u00ff(])/g, '$1 $2')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
   if (s.length > maxLen) s = s.slice(0, maxLen) + '\u2026';
   return s;
 }
 
 /**
- * Estrae il valore numerico da un segmento rawText.
+ * Testo da usare per cercare la bbox nel PDF.
+ * Usa rawLabel se disponibile (etichetta pura),
+ * altrimenti estrae la parte testuale da rawText rimuovendo i numeri.
  */
-function extractSegmentValue(seg: string): number | null {
-  const digitGroups = seg.match(/-?[\d][\d\s.,]*[\d]|-?\d/g);
-  if (!digitGroups || digitGroups.length === 0) return null;
-
-  const numbers: number[] = [];
-  for (const g of digitGroups) {
-    const compacted = g.replace(/(?<=\d) (?=\d)/g, '');
-    const parsed    = parseIT(compacted);
-    if (!isNaN(parsed) && parsed !== 0) numbers.push(parsed);
-  }
-  if (numbers.length === 0) return null;
-  return numbers[numbers.length - 1];
+function lookupLabel(field: ExtractedField<unknown>): string {
+  if (field.rawLabel?.trim()) return field.rawLabel.trim();
+  // Fallback: rimuove numeri e punteggiatura numerica da rawText
+  const s = (field.rawText || '')
+    .replace(/[\t]/g, ' ')
+    .replace(/-?[\d][\d.,]*/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,15 +128,6 @@ type MatchResult =
   | { kind: 'single';    bboxes: BBox[];  segmentNames: string[] }
   | { kind: 'formula';   bboxes: BBox[];  segmentNames: string[] }
   | { kind: 'multi-sum'; bboxes: BBox[];  segmentNames: string[] };
-
-function isCalculatedFormula(segments: string[]): boolean {
-  const withDigits = segments.filter(s => /\d/.test(s)).length;
-  return withDigits >= Math.ceil(segments.length / 2);
-}
-
-function segmentDisplayName(seg: string): string {
-  return seg.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim();
-}
 
 function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
@@ -145,68 +141,45 @@ interface PdfTextItem {
 }
 
 /**
- * Fonde token adiacenti sulla stessa riga in token virtuali più lunghi.
- * Serve per gestire numeri come "160.638" che il PDF spezza in "160." + "638".
+ * Fonde token adiacenti sulla STESSA riga con gap molto stretto (≤2pt).
+ * Serve per numeri spezzati dal PDF (es. "160." + "638").
+ * NON fonde colonne distanti come anno corrente vs anno precedente.
  */
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
-
-  // Ordina per Y (riga) poi per X (colonna)
   const sorted = [...items].sort((a, b) => {
-    const dy = b.transform[5] - a.transform[5]; // Y decrescente (coordinate PDF)
+    const dy = b.transform[5] - a.transform[5];
     if (Math.abs(dy) > 3) return dy;
     return a.transform[4] - b.transform[4];
   });
-
   const merged: PdfTextItem[] = [];
   let i = 0;
   while (i < sorted.length) {
-    const cur = sorted[i];
-    const curY = cur.transform[5];
-    const curX1 = cur.transform[4] + cur.width;
-
-    // Prova a fondere con il token immediatamente successivo se:
-    // - stessa riga (|deltaY| <= 3)
-    // - molto vicini orizzontalmente (gap <= 4pt)
-    // - entrambi sembrano parti di un numero
-    let j = i + 1;
-    let fusedStr = cur.str;
-    let fusedX1 = curX1;
+    const cur   = sorted[i];
+    const curY  = cur.transform[5];
+    let fusedStr    = cur.str;
+    let fusedX1     = cur.transform[4] + cur.width;
     let fusedHeight = cur.height;
-
+    let j = i + 1;
     while (j < sorted.length) {
-      const next = sorted[j];
-      const nextY = next.transform[5];
-      const nextX0 = next.transform[4];
-      const gap = nextX0 - fusedX1;
-
-      if (Math.abs(nextY - curY) > 3) break;  // riga diversa
-      if (gap > 4) break;                       // troppo distanti
-
-      // Fonde solo se almeno uno dei due contiene cifre
-      const bothNumeric = /\d/.test(fusedStr) || /\d/.test(next.str);
-      if (!bothNumeric) break;
-
-      fusedStr += next.str;
-      fusedX1 = next.transform[4] + next.width;
-      fusedHeight = Math.max(fusedHeight, next.height);
+      const next  = sorted[j];
+      const gap   = next.transform[4] - fusedX1;
+      if (Math.abs(next.transform[5] - curY) > 3) break;  // riga diversa
+      if (gap > 2) break;                                   // colonne separate — NON fondere
+      if (!/\d/.test(fusedStr) && !/\d/.test(next.str)) break; // nessuna cifra — non vale
+      fusedStr    += next.str;
+      fusedX1      = next.transform[4] + next.width;
+      fusedHeight  = Math.max(fusedHeight, next.height);
       j++;
     }
-
-    if (j > i + 1) {
-      // Token fuso: usa transform del primo, width aggiornata
-      merged.push({
-        str: fusedStr,
-        transform: [...cur.transform],
-        width: fusedX1 - cur.transform[4],
-        height: fusedHeight,
-      });
-    } else {
-      merged.push(cur);
-    }
+    merged.push({
+      str: fusedStr,
+      transform: [...cur.transform],
+      width: fusedX1 - cur.transform[4],
+      height: fusedHeight,
+    });
     i = j > i + 1 ? j : i + 1;
   }
-
   return merged;
 }
 
@@ -215,12 +188,11 @@ function findNumericNeighborForItem(
   labelItem: PdfTextItem,
   fieldValue: number | null | undefined,
 ): { numBbox: BBox | null; numericDistance: number } {
-  const labelTf = labelItem.transform;
-  const labelY  = labelTf[5];
-  const labelX1 = labelTf[4] + labelItem.width;
+  const labelY  = labelItem.transform[5];
+  const labelX1 = labelItem.transform[4] + labelItem.width;
   const Y_TOL   = 5;
 
-  // Usa i token fusi per trovare numeri che potrebbero essere spezzati nel PDF
+  // Usa i token fusi (solo gap ≤2pt) per ricomporre numeri spezzati
   const mergedItems = buildMergedTokens(items);
 
   const sameRow = mergedItems.filter(it => {
@@ -236,11 +208,8 @@ function findNumericNeighborForItem(
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
 
-    // Cerca prima una corrispondenza esatta sulle cifre
-    const exactMatch = pool.find(it => {
-      const normalized = normalizeNumStr(it.str);
-      return normalized === targetDigits;
-    });
+    // Match esatto sulle cifre normalizzate
+    const exactMatch = pool.find(it => normalizeNumStr(it.str) === targetDigits);
     if (exactMatch) {
       const tf = exactMatch.transform;
       return {
@@ -249,26 +218,30 @@ function findNumericNeighborForItem(
       };
     }
 
-    // Fallback: token numerico più vicino per valore
+    // Fallback: token numerico più vicino per valore assoluto
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
-      const compacted = it.str.replace(/(?<=\d) (?=\d)/g, '');
-      const parsed    = parseIT(compacted);
+      const parsed = parseIT(it.str.replace(/(?<=\d) (?=\d)/g, ''));
       if (!isNaN(parsed)) {
         const dist = Math.abs(parsed - absVal);
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    if (bestItem) {
+    // Accetta il best match solo se ragionevolmente vicino (entro 5% o 10 unità)
+    const threshold = Math.max(10, absVal * 0.05);
+    if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
       return {
         numBbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height },
         numericDistance: bestDist,
       };
     }
+    // Se nessun token è sufficientemente vicino, non evidenziare il numero
+    return { numBbox: null, numericDistance: Infinity };
   }
 
+  // Nessun fieldValue: usa il token numerico più a sinistra nella riga
   const closest = pool.reduce((a, b) => a.transform[4] < b.transform[4] ? a : b);
   const tf = closest.transform;
   return {
@@ -279,12 +252,13 @@ function findNumericNeighborForItem(
 
 async function findSingleBboxWithItem(
   items: PdfTextItem[],
-  segment: string,
+  labelText: string,
   fieldValue?: number | null,
 ): Promise<{ bbox: BBox; item: PdfTextItem } | null> {
-  const seg = segment.toLowerCase().replace(/\s+/g, ' ').trim();
+  const seg = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!seg) return null;
 
+  // Match esatto sull'etichetta
   const exactMatches = items.filter(it => it.str.toLowerCase().replace(/\s+/g, ' ').trim() === seg);
   let candidates: PdfTextItem[] = exactMatches;
 
@@ -310,9 +284,10 @@ async function findSingleBboxWithItem(
   if (candidates.length === 0) return null;
   if (candidates.length === 1) {
     const found = candidates[0];
-    const tf = found.transform;
+    const tf    = found.transform;
     return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
   }
+  // Più candidati: scegli quello con il valore numerico più vicino a fieldValue
   if (fieldValue !== null && fieldValue !== undefined) {
     let bestDist = Infinity;
     let bestItem = candidates[0];
@@ -324,60 +299,37 @@ async function findSingleBboxWithItem(
     return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + bestItem.width, y1: tf[5] + bestItem.height }, item: bestItem };
   }
   const found = candidates[0];
-  const tf = found.transform;
+  const tf    = found.transform;
   return { bbox: { x0: tf[4], y0: tf[5], x1: tf[4] + found.width, y1: tf[5] + found.height }, item: found };
 }
 
-async function findBboxByText(
+async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNum: number,
-  rawText: string,
-  fieldValue?: number | null,
+  field: ExtractedField<unknown>,
 ): Promise<MatchResult | null> {
   try {
     const page    = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
     const items   = content.items as PdfTextItem[];
+    const fv      = typeof field.value === 'number' ? field.value : null;
 
-    const rawSegments = rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(s => s.length > 0);
+    // Determina il testo dell'etichetta da cercare
+    const label = lookupLabel(field);
+    if (!label) return null;
 
-    if (rawSegments.length <= 1) {
-      const r = await findSingleBboxWithItem(items, rawText, fieldValue);
-      if (!r) return null;
-      const { numBbox } = findNumericNeighborForItem(items, r.item, fieldValue ?? null);
-      return { kind: 'single', bboxes: numBbox ? [r.bbox, numBbox] : [r.bbox], segmentNames: [rawText] };
-    }
+    // Cerca la riga etichetta nel PDF
+    const r = await findSingleBboxWithItem(items, label, fv);
+    if (!r) return null;
 
-    if (isCalculatedFormula(rawSegments)) {
-      const nameOnly  = segmentDisplayName(rawSegments[0]);
-      const lookupSeg = nameOnly.length >= 3 ? nameOnly : rawSegments[0];
-      const r = await findSingleBboxWithItem(items, lookupSeg, fieldValue);
-      if (!r) return null;
-      const { numBbox } = findNumericNeighborForItem(items, r.item, fieldValue ?? null);
-      return {
-        kind: 'formula',
-        bboxes: numBbox ? [r.bbox, numBbox] : [r.bbox],
-        segmentNames: rawSegments.map(segmentDisplayName).filter(Boolean),
-      };
-    }
+    // Trova il numero vicino corrispondente a field.value
+    const { numBbox } = findNumericNeighborForItem(items, r.item, fv);
 
-    const bboxes: BBox[] = [];
-    const segmentNames: string[] = [];
-    for (const seg of rawSegments) {
-      const segValue  = extractSegmentValue(seg);
-      const cleanSeg  = segmentDisplayName(seg);
-      const lookupSeg = cleanSeg.length >= 3 ? cleanSeg : seg;
-      const r = await findSingleBboxWithItem(items, lookupSeg, segValue);
-      if (!r) continue;
-      const isDup = bboxes.some(b => Math.abs(b.y0 - r.bbox.y0) < 2 && Math.abs(b.x0 - r.bbox.x0) < 2);
-      if (isDup) continue;
-      bboxes.push(r.bbox);
-      segmentNames.push(cleanSeg || seg);
-      const { numBbox } = findNumericNeighborForItem(items, r.item, segValue);
-      if (numBbox) bboxes.push(numBbox);
-    }
-    if (bboxes.length === 0) return null;
-    return { kind: 'multi-sum', bboxes, segmentNames };
+    return {
+      kind: 'single',
+      bboxes: numBbox ? [r.bbox, numBbox] : [r.bbox],
+      segmentNames: [label],
+    };
   } catch {
     return null;
   }
@@ -423,14 +375,6 @@ const NumericInput: React.FC<NumericInputProps> = ({ value, onChange, onFocus, c
 // ---------------------------------------------------------------------------
 const HIGHLIGHT_LABEL_COLOR = { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' };
 const HIGHLIGHT_VALUE_COLOR = { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' };
-const MULTI_HIGHLIGHT_COLORS = [
-  { bg: 'rgba(59,130,246,0.22)',  border: 'rgba(59,130,246,0.85)' },
-  { bg: 'rgba(16,185,129,0.28)',  border: 'rgba(16,185,129,0.90)' },
-  { bg: 'rgba(245,158,11,0.22)',  border: 'rgba(245,158,11,0.85)' },
-  { bg: 'rgba(239,68,68,0.22)',   border: 'rgba(239,68,68,0.85)'  },
-  { bg: 'rgba(168,85,247,0.22)',  border: 'rgba(168,85,247,0.85)' },
-  { bg: 'rgba(20,184,166,0.28)',  border: 'rgba(20,184,166,0.90)' },
-];
 
 interface ActiveHighlight {
   page:         number;
@@ -444,7 +388,7 @@ const EMPTY_BBOX: BBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
 function isBboxEmpty(b: BBox) { return b.x0 === 0 && b.y0 === 0 && b.x1 === 0 && b.y1 === 0; }
 
 // ---------------------------------------------------------------------------
-// PdfViewer — canvas + text layer (solo hit-testing) + highlight layer
+// PdfViewer
 // ---------------------------------------------------------------------------
 interface PdfViewerProps {
   file:      File;
@@ -479,12 +423,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
 
     hl.bboxes.forEach((bbox, idx) => {
       if (isBboxEmpty(bbox)) return;
-      let colors: { bg: string; border: string };
-      if (hl.isMultiSum) {
-        colors = MULTI_HIGHLIGHT_COLORS[idx % MULTI_HIGHLIGHT_COLORS.length];
-      } else {
-        colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
-      }
+      const colors = idx === 0 ? HIGHLIGHT_LABEL_COLOR : HIGHLIGHT_VALUE_COLOR;
       const [ax, ay] = viewport.convertToViewportPoint(bbox.x0, bbox.y1);
       const [bx, by] = viewport.convertToViewportPoint(bbox.x1, bbox.y0);
       const dpr = window.devicePixelRatio || 1;
@@ -636,12 +575,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ file, highlight }) => {
   const visibleBboxes = highlight?.bboxes.filter(b => !isBboxEmpty(b)) ?? [];
   const legendItems = (() => {
     if (!highlight || visibleBboxes.length === 0) return [];
-    if (highlight.isMultiSum) {
-      return highlight.segmentNames.map((name, i) => ({
-        color: MULTI_HIGHLIGHT_COLORS[(i * 2) % MULTI_HIGHLIGHT_COLORS.length].border,
-        name,
-      }));
-    }
     const items = [];
     if (visibleBboxes[0]) items.push({ color: HIGHLIGHT_LABEL_COLOR.border, name: 'Etichetta' });
     if (visibleBboxes[1]) items.push({ color: HIGHLIGHT_VALUE_COLOR.border, name: 'Valore' });
@@ -742,20 +675,6 @@ const HIGHLIGHT_COLORS = [
   'rgba(245,158,11,0.35)',
 ];
 
-function matchKindFromRawText(rawText: string | null | undefined): MatchResult['kind'] {
-  if (!rawText) return 'single';
-  const segments = rawText.split(/\s*\+\s*/).map(s => s.trim()).filter(Boolean);
-  if (segments.length <= 1) return 'single';
-  return isCalculatedFormula(segments) ? 'formula' : 'multi-sum';
-}
-
-function segmentNamesFromRawText(rawText: string): string[] {
-  return rawText
-    .split(/\s*\+\s*/)
-    .map(s => s.replace(/[\d.,]+/g, '').replace(/\s{2,}/g, ' ').trim())
-    .filter(Boolean);
-}
-
 export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
@@ -774,24 +693,26 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   }, []);
 
   const handleFieldFocus = useCallback(async (
-    field: ExtractedField<any> | null,
+    field: ExtractedField<unknown> | null,
     colorIndex: number,
     fileIdx: number,
   ) => {
     const color = HIGHLIGHT_COLORS[colorIndex] ?? HIGHLIGHT_COLORS[0];
-    if (!field?.page || !field?.rawText) { setActiveHighlight(null); return; }
+    if (!field?.page || (!field?.rawText && !field?.rawLabel)) { setActiveHighlight(null); return; }
 
     setActiveHighlight({ page: field.page, bboxes: [EMPTY_BBOX], segmentNames: [], color, isMultiSum: false });
     if (!files[fileIdx]) return;
 
     try {
       const doc    = await getPdfDoc(fileIdx, files[fileIdx]);
-      const result = await findBboxByText(doc, field.page, field.rawText, field.value as number | null);
+      const result = await findBboxForField(doc, field.page, field);
       if (!result) return;
       setActiveHighlight({
-        page: field.page, bboxes: result.bboxes,
-        segmentNames: result.segmentNames, color,
-        isMultiSum: result.kind === 'multi-sum',
+        page: field.page,
+        bboxes: result.bboxes,
+        segmentNames: result.segmentNames,
+        color,
+        isMultiSum: false,
       });
     } catch { /**/ }
   }, [files, getPdfDoc]);
@@ -881,9 +802,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   const field     = year[key] as ExtractedField<number>;
                   const isUnavail = field?.value === null && !!field?.rawText;
                   const hasPage   = !!field?.page;
-                  const kind      = matchKindFromRawText(field?.rawText);
-                  const showSigma = kind === 'multi-sum';
-                  const segNames  = field?.rawText ? segmentNamesFromRawText(field.rawText) : [];
+                  const caption   = field ? captionText(field) : '';
                   return (
                     <div key={key as string}>
                       <label className="flex items-center gap-1 flex-wrap text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">
@@ -891,18 +810,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         {hasPage && (
                           <span className="inline-flex items-center gap-0.5 text-[9px] font-medium text-slate-400">
                             <ChevronRight className="w-2.5 h-2.5" /> p.{field.page}
-                          </span>
-                        )}
-                        {showSigma && segNames.length > 0 && (
-                          <span title={`Somma di: ${segNames.join(' + ')}`}
-                            className="ml-1 text-[9px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5 cursor-help">
-                            &Sigma; {segNames.join(' + ')}
-                          </span>
-                        )}
-                        {!showSigma && kind === 'formula' && (
-                          <span title={`Formula: ${segNames.join(' + ')}`}
-                            className="ml-1 text-[9px] font-semibold text-teal-600 bg-teal-50 border border-teal-200 rounded px-1 py-0.5 cursor-help">
-                            f(x)
                           </span>
                         )}
                         {isUnavail && (
@@ -918,8 +825,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                         onFocus={() => handleFieldFocus(field, yearIdx, yearIdx)}
                         onChange={n => updateYearField(yearIdx, key, n)}
                       />
-                      {field?.rawText && (
-                        <p className="mt-0.5 text-[10px] text-slate-400 italic">&laquo;{cleanRawText(field.rawText)}&raquo;</p>
+                      {caption && (
+                        <p className="mt-0.5 text-[10px] text-slate-400 italic">&laquo;{caption}&raquo;</p>
                       )}
                     </div>
                   );

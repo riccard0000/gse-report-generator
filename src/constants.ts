@@ -45,10 +45,16 @@ Mappe voci di bilancio (schema italiano CE/SP):
 - "debitiPrevidenziali" = debiti previdenziali/INPS/INAIL SP o nota integrativa
 - "fondoRischiOneri" = B) Fondi per rischi e oneri SP
 
-Per ciascun valore numerico includi sempre:
+Per ciascun valore numerico includi sempre questi 4 campi:
 - "value": numero intero (0 se assente, null se non trovato)
 - "page": numero di pagina del PDF
-- "rawText": la riga testuale esatta del documento da cui e stato estratto
+- "rawText": la riga testuale COMPLETA del documento (etichetta + tutti i numeri presenti)
+- "rawLabel": SOLO il testo dell'etichetta/voce, SENZA NESSUN NUMERO.
+  Esempio: se la riga è "Totale valore della produzione   818.547   778.956",
+  rawText = "Totale valore della produzione 818.547 778.956",
+  rawLabel = "Totale valore della produzione".
+  Per formule/calcoli (es. EBITDA stimato), rawLabel = nome della voce principale (es. "Differenza tra valore e costi della produzione").
+  rawLabel NON deve mai contenere cifre, punti decimali o virgole numeriche.
 
 Per il PDF GSE: l'importo residuo si trova dopo la frase "Importo residuo dovuto al GSE euro".
 
@@ -66,32 +72,32 @@ Per ogni voce della checklist:
 
 Struttura JSON richiesta:
 {
-  "companyName": { "value": "string", "page": 1, "rawText": "string" },
-  "vatNumber": { "value": "string", "page": 1, "rawText": "string" },
-  "gseResidual": { "value": 0, "page": 1, "rawText": "string" },
+  "companyName": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
+  "vatNumber": { "value": "string", "page": 1, "rawText": "string", "rawLabel": "string" },
+  "gseResidual": { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
   "gseSourceFileName": "string",
   "yearsData": [
     {
       "year": "YYYY",
       "sourceFileName": "string",
-      "ricavi": { "value": 0, "page": 1, "rawText": "string" },
-      "ebitda": { "value": 0, "page": 1, "rawText": "string" },
-      "ebit": { "value": 0, "page": 1, "rawText": "string" },
-      "utileNetto": { "value": 0, "page": 1, "rawText": "string" },
-      "interessiPassivi": { "value": 0, "page": 1, "rawText": "string" },
-      "totaleAttivo": { "value": 0, "page": 1, "rawText": "string" },
-      "patrimonioNetto": { "value": 0, "page": 1, "rawText": "string" },
-      "totaleDebiti": { "value": 0, "page": 1, "rawText": "string" },
-      "debitiBancheBreve": { "value": 0, "page": 1, "rawText": "string" },
-      "debitiBancheML": { "value": 0, "page": 1, "rawText": "string" },
-      "disponibilitaLiquide": { "value": 0, "page": 1, "rawText": "string" },
-      "creditiEntro12Mesi": { "value": 0, "page": 1, "rawText": "string" },
-      "rimanenze": { "value": 0, "page": 1, "rawText": "string" },
-      "attivoCircolante": { "value": 0, "page": 1, "rawText": "string" },
-      "passivitaCorrenti": { "value": 0, "page": 1, "rawText": "string" },
-      "debitiTributari": { "value": 0, "page": 1, "rawText": "string" },
-      "debitiPrevidenziali": { "value": 0, "page": 1, "rawText": "string" },
-      "fondoRischiOneri": { "value": 0, "page": 1, "rawText": "string" }
+      "ricavi":               { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "ebitda":               { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "ebit":                 { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "utileNetto":           { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "interessiPassivi":     { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "totaleAttivo":         { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "patrimonioNetto":      { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "totaleDebiti":         { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "debitiBancheBreve":    { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "debitiBancheML":       { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "disponibilitaLiquide": { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "creditiEntro12Mesi":   { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "rimanenze":            { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "attivoCircolante":     { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "passivitaCorrenti":    { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "debitiTributari":      { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "debitiPrevidenziali":  { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" },
+      "fondoRischiOneri":     { "value": 0, "page": 1, "rawText": "string", "rawLabel": "string" }
     }
   ],
   "checklist": {
@@ -129,7 +135,7 @@ Struttura JSON richiesta:
 
 /**
  * Prompt per la generazione della narrativa tecnica.
- * Riceve i dati estratti JSON + i KPI gia calcolati deterministicamente.
+ * Riceve i dati estratti JSON + i KPI già calcolati deterministicamente.
  * Risponde SOLO con JSON contenente i 4 paragrafi + esito + commentoCopertura.
  */
 export const NARRATIVE_PROMPT = (extractedDataJson: string, kpiJson: string) =>
