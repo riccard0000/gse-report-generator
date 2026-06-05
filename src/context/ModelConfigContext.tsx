@@ -61,12 +61,11 @@ export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [saved,          setSaved]          = useState(false);
   const [loadError,      setLoadError]      = useState<string | null>(null);
 
-  // ── Caricamento all'avvio: modelli da /config, prompt da /prompts ────────────
+  // ── Caricamento all'avvio ────────────────────────────────────────────────
   useEffect(() => {
     const base = workerBase();
-    if (!base || base === '') return;
+    if (!base) return;
 
-    // Modelli
     fetch(`${base}/config`)
       .then(r => r.json())
       .then((data: { models?: ModelConfig }) => {
@@ -74,7 +73,6 @@ export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ c
       })
       .catch(() => setLoadError('Impossibile caricare la configurazione modelli.'));
 
-    // Prompt
     fetch(`${base}/prompts`)
       .then(r => r.json())
       .then((data: Partial<PromptCustom>) => {
@@ -85,22 +83,22 @@ export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ c
           });
         }
       })
-      .catch(() => { /* prompt: fallback ai default, non bloccante */ });
+      .catch(() => { /* prompt: fallback ai default */ });
   }, []);
 
-  // ── Salva solo modelli su GSE_CONFIG ───────────────────────────────────────
+  // ── Salva modelli ────────────────────────────────────────────────────────
+  // IMPORTANTE: snapshot dei valori PRIMA di qualsiasi setState/re-render
   const saveModels = useCallback(async () => {
-    const base = workerBase();
+    const base        = workerBase();
+    const configSnap  = config;           // snapshot sincrono — non risente di re-render
     setSaving(true); setSaved(false);
     try {
       const res = await fetch(`${base}/config`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ models: config }),
+        body:    JSON.stringify({ models: configSnap }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
     } catch {
       setLoadError('Errore nel salvataggio dei modelli.');
     } finally {
@@ -108,31 +106,69 @@ export const ModelConfigProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, [config]);
 
-  // ── Salva solo prompt su GSE_PROMPT ───────────────────────────────────────
+  // ── Salva prompt ─────────────────────────────────────────────────────────
   const savePrompts = useCallback(async () => {
-    const base = workerBase();
+    const base           = workerBase();
+    const promptSnap     = promptCustom;   // snapshot sincrono
     setSaving(true); setSaved(false);
     try {
+      const body = JSON.stringify({
+        extraction: promptSnap.extraction ?? '',
+        narrative:  promptSnap.narrative  ?? '',
+      });
       const res = await fetch(`${base}/prompts`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ extraction: promptCustom.extraction, narrative: promptCustom.narrative }),
+        body,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} — ${errText}`);
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch {
-      setLoadError('Errore nel salvataggio dei prompt.');
+    } catch (e) {
+      setLoadError(`Errore nel salvataggio dei prompt: ${String(e)}`);
     } finally {
       setSaving(false);
     }
   }, [promptCustom]);
 
-  // saveConfig = compatibilità retroattiva: salva entrambi
+  // saveConfig = retrocompatibilità: salva entrambi in sequenza con snapshot
   const saveConfig = useCallback(async () => {
-    await saveModels();
-    await savePrompts();
-  }, [saveModels, savePrompts]);
+    const base           = workerBase();
+    const configSnap     = config;
+    const promptSnap     = promptCustom;
+    setSaving(true); setSaved(false);
+    try {
+      const [r1, r2] = await Promise.all([
+        fetch(`${base}/config`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ models: configSnap }),
+        }),
+        fetch(`${base}/prompts`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            extraction: promptSnap.extraction ?? '',
+            narrative:  promptSnap.narrative  ?? '',
+          }),
+        }),
+      ]);
+      if (!r1.ok) throw new Error(`Config HTTP ${r1.status}`);
+      if (!r2.ok) {
+        const t = await r2.text().catch(() => '');
+        throw new Error(`Prompts HTTP ${r2.status} — ${t}`);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) {
+      setLoadError(`Errore nel salvataggio: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [config, promptCustom]);
 
   return (
     <Ctx.Provider value={{

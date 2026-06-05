@@ -43,13 +43,8 @@ const DEFAULT_MODELS = {
 };
 
 const DEFAULT_PROMPTS = {
-  extraction: `Presta particolare attenzione a:
-- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)
-- Leggere le note integrative per voci non presenti nello schema abbreviato
-- Riportare i valori in unità di euro (non in migliaia)`,
-  narrative: `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.
-Se i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.
-Evita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`,
+  extraction: `Presta particolare attenzione a:\n- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)\n- Leggere le note integrative per voci non presenti nello schema abbreviato\n- Riportare i valori in unità di euro (non in migliaia)`,
+  narrative: `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.\nSe i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.\nEvita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`,
 };
 
 // ───────────────────────────────────────────────────────────────────
@@ -86,6 +81,13 @@ function metaFromRecord(record) {
   };
 }
 
+/** Legge e parsa il body JSON; restituisce null se vuoto o malformato */
+async function parseBody(request) {
+  const text = await request.text();
+  if (!text || text.trim() === '') return null;
+  try { return JSON.parse(text); } catch { return null; }
+}
+
 export default {
   async fetch(request, env) {
     const origin      = request.headers.get('Origin') ?? '';
@@ -102,10 +104,7 @@ export default {
     if (request.method === 'GET' && pathname === '/config') {
       try {
         const raw = kv ? await kv.get(KV_MODELS_KEY) : null;
-        if (raw) {
-          return jsonResponse(JSON.parse(raw), 200, corsHeaders);
-        }
-        // Prima volta: scrivi i default e restituiscili
+        if (raw) return jsonResponse(JSON.parse(raw), 200, corsHeaders);
         if (kv) await kv.put(KV_MODELS_KEY, JSON.stringify(DEFAULT_MODELS));
         return jsonResponse(DEFAULT_MODELS, 200, corsHeaders);
       } catch {
@@ -116,9 +115,8 @@ export default {
     // ── POST /config ── salva modelli ────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/config') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
-      let body;
-      try { body = await request.json(); }
-      catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
+      const body = await parseBody(request);
+      if (body === null) return jsonResponse({ error: 'Body JSON non valido o vuoto.' }, 400, corsHeaders);
 
       let existing = { ...DEFAULT_MODELS };
       try { const r = await kv.get(KV_MODELS_KEY); if (r) existing = JSON.parse(r); } catch { /**/ }
@@ -135,10 +133,7 @@ export default {
     if (request.method === 'GET' && pathname === '/prompts') {
       try {
         const raw = kv ? await kv.get(KV_PROMPTS_KEY) : null;
-        if (raw) {
-          return jsonResponse(JSON.parse(raw), 200, corsHeaders);
-        }
-        // Prima volta: scrivi i default e restituiscili
+        if (raw) return jsonResponse(JSON.parse(raw), 200, corsHeaders);
         if (kv) await kv.put(KV_PROMPTS_KEY, JSON.stringify(DEFAULT_PROMPTS));
         return jsonResponse(DEFAULT_PROMPTS, 200, corsHeaders);
       } catch {
@@ -149,16 +144,14 @@ export default {
     // ── POST /prompts ── salva prompt ─────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/prompts') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
-      let body;
-      try { body = await request.json(); }
-      catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
+      const body = await parseBody(request);
+      if (body === null) return jsonResponse({ error: 'Body JSON non valido o vuoto.' }, 400, corsHeaders);
 
       let existing = { ...DEFAULT_PROMPTS };
       try { const r = await kv.get(KV_PROMPTS_KEY); if (r) existing = JSON.parse(r); } catch { /**/ }
       const merged = {
-        ...existing,
-        ...(body.extraction !== undefined ? { extraction: body.extraction } : {}),
-        ...(body.narrative  !== undefined ? { narrative:  body.narrative  } : {}),
+        extraction: body.extraction !== undefined ? String(body.extraction) : existing.extraction,
+        narrative:  body.narrative  !== undefined ? String(body.narrative)  : existing.narrative,
       };
       try {
         await kv.put(KV_PROMPTS_KEY, JSON.stringify(merged));
@@ -196,9 +189,8 @@ export default {
     // ── POST /history ── crea (extracted) o aggiorna (confirmed) ─────────────
     if (request.method === 'POST' && pathname === '/history') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
-      let body;
-      try { body = await request.json(); }
-      catch { return jsonResponse({ error: 'Body JSON non valido.' }, 400, corsHeaders); }
+      const body = await parseBody(request);
+      if (body === null) return jsonResponse({ error: 'Body JSON non valido o vuoto.' }, 400, corsHeaders);
 
       const { id: existingId, step, extractedData, confirmedData, isDemoMode } = body;
       if (!step || !['extracted', 'confirmed'].includes(step)) {
@@ -253,9 +245,8 @@ export default {
     // ── POST / ── proxy OpenRouter ───────────────────────────────────────────
     if (request.method === 'POST' && (pathname === '/' || pathname === '')) {
       if (!env.OPENROUTER_API_KEY) return jsonResponse({ error: { message: 'Chiave API non configurata.' } }, 500, corsHeaders);
-      let body;
-      try { body = await request.json(); }
-      catch { return jsonResponse({ error: { message: 'Body JSON non valido.' } }, 400, corsHeaders); }
+      const body = await parseBody(request);
+      if (body === null) return jsonResponse({ error: { message: 'Body JSON non valido o vuoto.' } }, 400, corsHeaders);
       const upstream = await fetch(OPENROUTER_URL, {
         method: 'POST',
         headers: {
