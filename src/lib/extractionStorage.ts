@@ -21,11 +21,12 @@
  */
 
 import { ExtractedData, ExtractionMeta, ExtractionRecord } from '../types';
+import { OPENROUTER_ENDPOINT } from '../constants';
 
-export const WORKER_URL = (import.meta.env.VITE_WORKER_URL as string | undefined)
-  ?? 'https://gse-report-worker.riccardocoppola00.workers.dev';
+// Riusa VITE_PROXY_URL (già configurata) come base URL per history e files
+export const WORKER_URL = OPENROUTER_ENDPOINT?.replace(/\/$/, '') ?? '';
 
-// ── Upload singolo PDF su R2 ─────────────────────────────────────────────────
+// ── Upload singolo PDF su R2 ───────────────────────────────────────────────────
 export async function uploadPdf(
   historyId: string,
   file: File,
@@ -46,7 +47,7 @@ export async function uploadPdf(
   }
 }
 
-// ── Download PDF da R2 come File ─────────────────────────────────────────────
+// ── Download PDF da R2 come File ─────────────────────────────────────────────────
 export async function downloadPdf(
   key: string,
   fileName: string,
@@ -61,7 +62,7 @@ export async function downloadPdf(
   }
 }
 
-// ── Step 1: salva estrazione AI grezza + upload PDF ──────────────────────────
+// ── Step 1: salva estrazione AI grezza + upload PDF ──────────────────────────────
 export async function saveExtractionStep1(
   extractedData: ExtractedData,
   isDemoMode: boolean,
@@ -99,7 +100,7 @@ export async function saveExtractionStep1(
   }
 }
 
-// ── Step 2: aggiunge dati confermati al record esistente ─────────────────────
+// ── Step 2: aggiunge dati confermati al record esistente ─────────────────────────
 export async function saveExtractionStep2(
   id: string,
   confirmedData: ExtractedData,
@@ -117,7 +118,7 @@ export async function saveExtractionStep2(
   }
 }
 
-// ── Lista metadata storico ────────────────────────────────────────────────────
+// ── Lista metadata storico ────────────────────────────────────────────────────────────
 export async function listHistory(): Promise<ExtractionMeta[]> {
   try {
     const res = await fetch(`${WORKER_URL}/history`);
@@ -128,7 +129,7 @@ export async function listHistory(): Promise<ExtractionMeta[]> {
   }
 }
 
-// ── Record completo (extractedData + confirmedData) ───────────────────────────
+// ── Record completo (extractedData + confirmedData) ─────────────────────────────────
 export async function getHistoryRecord(id: string): Promise<ExtractionRecord | null> {
   try {
     const res = await fetch(`${WORKER_URL}/history/${encodeURIComponent(id)}`);
