@@ -161,10 +161,17 @@ function AppInner() {
       setNarrativeData(narrative);
       setAppState('done');
 
-      // Salva step 'reported' con la narrativa
+      // Salva step 'reported' con la narrativa generata dall'AI.
+      // currentHistoryId viene assegnato prima della chiamata asincrona così
+      // handleDocxDownloaded lo trova già disponibile anche se l'utente
+      // scarica il DOCX immediatamente dopo la visualizzazione del report.
+      // .catch() garantisce che un errore di rete non blocchi l'UI:
+      // il report è già mostrato, ma l'errore viene loggato in console.
       if (resolvedId) {
-        saveExtractionStep3(resolvedId, narrative, isDemoMode);
         currentHistoryId.current = resolvedId;
+        saveExtractionStep3(resolvedId, narrative, isDemoMode).catch(() => {
+          console.warn('[GSE] saveExtractionStep3 fallita — narrativa non persistita su KV');
+        });
       }
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante la generazione del report');
