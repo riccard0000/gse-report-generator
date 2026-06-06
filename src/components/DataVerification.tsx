@@ -4,7 +4,7 @@ import { TextLayer } from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
 import { computeDerivedFields } from '../kpiCalculator';
 import { BALANCE_SCHEMA, BalanceFieldKey, getSearchLabels } from '../balanceSchema';
-import { AlertTriangle, CheckCircle, ChevronRight, FileSearch, Layers, RefreshCw } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ChevronRight, Download, FileSearch, Layers, RefreshCw } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
@@ -935,6 +935,32 @@ export const DataVerification: React.FC<Props> = ({
     onApprove(data);
   };
 
+  // ---------------------------------------------------------------------------
+  // Download JSON estrazione
+  // ---------------------------------------------------------------------------
+  const handleDownloadJson = useCallback(() => {
+    const company = (data.companyName?.value ?? 'estrazione')
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/[^\w._-]/g, '');
+    const years = data.yearsData
+      .map(y => y.year)
+      .filter(Boolean)
+      .join('_');
+    const filename = `GSE_Estrazione_${company}${years ? '_' + years : ''}.json`;
+
+    const blob = new Blob(
+      [JSON.stringify(data, null, 2)],
+      { type: 'application/json' },
+    );
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [data]);
+
   const tabLabels = ['Importo GSE', ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`)];
   const tabColors = [
     gseResidualValid
@@ -1187,16 +1213,25 @@ export const DataVerification: React.FC<Props> = ({
           })()}
         </div>
 
-        {/* ---- Footer con bottone conferma / rigenera ---- */}
+        {/* ---- Footer con bottone conferma / rigenera / scarica JSON ---- */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
           {readOnly ? (
-            <button
-              onClick={() => onRegenerateNarrative?.(data)}
-              className="w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white"
-            >
-              <RefreshCw className="w-5 h-5" />
-              Rigenera narrativa
-            </button>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => onRegenerateNarrative?.(data)}
+                className="w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white"
+              >
+                <RefreshCw className="w-5 h-5" />
+                Rigenera narrativa
+              </button>
+              <button
+                onClick={handleDownloadJson}
+                className="w-full flex items-center justify-center gap-2 py-2 px-6 text-sm font-semibold rounded-xl transition-colors border border-slate-300 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-600"
+              >
+                <Download className="w-4 h-4" />
+                Scarica JSON estrazione
+              </button>
+            </div>
           ) : (
             <>
               {!gseResidualValid && (
