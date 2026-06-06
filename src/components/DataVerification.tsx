@@ -852,11 +852,13 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
-  // Mostra l'errore solo dopo che l'utente ha tentato di confermare
   const [showGseError, setShowGseError]       = useState(false);
 
-  // Il valore GSE è valido se è un numero (incluso 0)
-  const gseResidualValid = data.gseResidual?.value !== null && data.gseResidual?.value !== undefined;
+  // Valido solo se è un numero strettamente maggiore di 0
+  const gseResidualValid =
+    data.gseResidual?.value !== null &&
+    data.gseResidual?.value !== undefined &&
+    data.gseResidual.value > 0;
 
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
@@ -918,7 +920,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const handleConfirm = () => {
     if (!gseResidualValid) {
       setShowGseError(true);
-      setActiveTab(0); // porta l'utente sul tab GSE
+      setActiveTab(0);
       return;
     }
     onApprove(data);
@@ -955,7 +957,6 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               className={`flex-1 py-3 px-2 text-xs font-semibold border-b-2 transition-colors ${
                 activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]}`}>
               {lbl}
-              {/* pallino rosso sul tab GSE se il valore manca */}
               {i === 0 && !gseResidualValid && (
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 ml-1 align-middle" />
               )}
@@ -971,14 +972,13 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 extraprofitti derivante dalla vendita dell&apos;energia elettrica (art. 15-bis D.L. 4/2022).
               </p>
 
-              {/* Banner errore — visibile solo dopo tentativo di conferma */}
               {showGseError && !gseResidualValid && (
                 <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
                   <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="text-xs font-semibold text-red-700">Campo obbligatorio</p>
                     <p className="text-xs text-red-600 mt-0.5">
-                      Inserisci l&apos;importo residuo GSE per proseguire. Usa&nbsp;<strong>0</strong>&nbsp;se l&apos;importo è zero.
+                      Inserisci un importo residuo GSE maggiore di zero per proseguire.
                     </p>
                   </div>
                 </div>
@@ -996,7 +996,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                   }`}
                   onChange={n => {
                     setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }));
-                    if (n !== null) setShowGseError(false);
+                    // Rimuovi errore solo se il nuovo valore è > 0
+                    if (n !== null && n > 0) setShowGseError(false);
                   }}
                 />
               </div>
@@ -1004,8 +1005,8 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 <p className="mt-2 text-xs text-slate-400 italic">Testo estratto: &ldquo;{data.gseResidual.rawText}&rdquo;</p>
               )}
               <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">
-                <strong>Nota:</strong> se il documento GSE non era allegato o l&apos;importo non è stato trovato automaticamente,
-                inserisci il valore manualmente. Usa <strong>0</strong> se il debito è già estinto.
+                <strong>Nota:</strong> se il documento GSE non era allegato o l&apos;importo non è stato trovato
+                automaticamente, inserisci il valore manualmente. Il campo accetta solo valori positivi.
               </p>
             </div>
           )}
@@ -1163,11 +1164,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
         {/* ---- Footer con bottone conferma ---- */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
-          {/* Avviso statico sotto il bottone quando il campo è mancante */}
           {!gseResidualValid && (
             <p className="text-[11px] text-amber-600 text-center mb-2 flex items-center justify-center gap-1">
               <AlertTriangle className="w-3 h-3" />
-              Importo GSE obbligatorio — vai al tab &ldquo;Importo GSE&rdquo;
+              Importo GSE obbligatorio e &gt; 0 — vai al tab &ldquo;Importo GSE&rdquo;
             </p>
           )}
           <button
