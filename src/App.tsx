@@ -15,7 +15,7 @@ import {
 } from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
-  Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History, ArrowLeft,
+  Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
 } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
@@ -166,12 +166,6 @@ function AppInner() {
       setNarrativeData(narrative);
       setAppState('done');
 
-      // Salva step 'reported' con la narrativa generata dall'AI.
-      // currentHistoryId viene assegnato prima della chiamata asincrona così
-      // handleDocxDownloaded lo trova già disponibile anche se l'utente
-      // scarica il DOCX immediatamente dopo la visualizzazione del report.
-      // .catch() garantisce che un errore di rete non blocchi l'UI:
-      // il report è già mostrato, ma l'errore viene loggato in console.
       if (resolvedId) {
         currentHistoryId.current = resolvedId;
         saveExtractionStep3(resolvedId, narrative, isDemoMode).catch(() => {
@@ -186,8 +180,7 @@ function AppInner() {
 
   // ── Conferma dati dalla DataVerification ─────────────────────────────────────
   // Se l'utente torna alla verifica e riconferma mentre docxDownloaded=true,
-  // mostriamo la stessa modale di warning usata da handleRegenerateNarrative
-  // per evitare che il percorso "torna + riconferma" bypassi la protezione.
+  // mostriamo la stessa modale di warning per evitare il bypass.
   const handleApprove = useCallback(async (finalData: ExtractedData) => {
     if (currentDocxDld.current) {
       pendingRegenData.current = finalData;
@@ -210,19 +203,18 @@ function AppInner() {
   const confirmRegen = useCallback(() => {
     setShowRegenWarning(false);
     currentDocxDld.current = false;
-    // Resetta il flag anche sul KV in modo da mantenere consistenza
     if (currentHistoryId.current) resetDocxDownloaded(currentHistoryId.current);
     if (pendingRegenData.current) doGenerateNarrative(pendingRegenData.current);
     pendingRegenData.current = null;
   }, [doGenerateNarrative]);
 
-  // ── DOCX scaricato ───────────────────────────────────────────────────────────────
+  // ── DOCX scaricato ────────────────────────────────────────────────────────────
   const handleDocxDownloaded = useCallback(() => {
     currentDocxDld.current = true;
     if (currentHistoryId.current) markDocxDownloaded(currentHistoryId.current);
   }, []);
 
-  // ── Carica da storico ───────────────────────────────────────────────────────────────
+  // ── Carica da storico ──────────────────────────────────────────────────────────
   const handleLoadFromHistory = useCallback(async (record: ExtractionRecord, meta: ExtractionMeta) => {
     setHistorySidebarOpen(false);
     setError(null); setNarrativeData(null);
@@ -241,7 +233,6 @@ function AppInner() {
       return;
     }
 
-    // Se il record è 'reported' → apri direttamente ReportViewer
     if (record.step === 'reported' && record.narrativeData) {
       setExtractedData(dataToLoad);
       setNarrativeData(record.narrativeData);
@@ -251,15 +242,12 @@ function AppInner() {
       return;
     }
 
-    // Se il record è 'confirmed' → DataVerification in sola lettura
     if (record.step === 'confirmed') {
       setIsReadOnly(true);
     } else {
-      // extracted → editabile
       setIsReadOnly(false);
     }
 
-    // Ripristina PDF se disponibili
     const fileKeys: string[] = (record as unknown as { fileKeys?: string[] }).fileKeys ?? [];
     if (fileKeys.length > 0 && !meta.isDemoMode) {
       setProgress('Ripristino PDF dallo storico...');
@@ -287,8 +275,7 @@ function AppInner() {
   const showUpload       = appState === 'idle' || appState === 'extracting' || appState === 'error';
   const showVerification = appState === 'verifying' || appState === 'generating';
 
-  // Il bottone "Torna alla verifica" è disponibile solo su sessioni non-readOnly
-  // (analisi fresh o demo) dove i file sono ancora in memoria.
+  // Breadcrumb "Verifica dati" cliccabile solo su sessioni fresh/demo (non readOnly)
   const canGoBackToVerification = appState === 'done' && !isReadOnly && files.length > 0;
 
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
@@ -381,15 +368,6 @@ function AppInner() {
                   <History className="w-4 h-4" /> Storico
                 </button>
               )}
-              {/* Torna alla verifica: disponibile solo su sessioni fresh/demo (non readOnly) */}
-              {page === 'home' && canGoBackToVerification && (
-                <button
-                  onClick={handleBackToVerification}
-                  className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
-                >
-                  <ArrowLeft className="w-4 h-4" /> Verifica dati
-                </button>
-              )}
               {page === 'home' && (appState === 'done' || appState === 'verifying') && (
                 <button onClick={handleReset} className="text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors">
                   Nuova analisi
@@ -456,6 +434,7 @@ function AppInner() {
                       </div>
                     )}
                   </div>
+
                 </div>
               )}
 
@@ -487,6 +466,7 @@ function AppInner() {
                   narrativeData={narrativeData}
                   sourceFiles={files}
                   onDocxDownloaded={handleDocxDownloaded}
+                  onBackToVerification={canGoBackToVerification ? handleBackToVerification : undefined}
                 />
               )}
             </>

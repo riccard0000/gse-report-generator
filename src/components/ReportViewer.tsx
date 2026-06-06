@@ -2,7 +2,7 @@ import React, { useRef } from 'react';
 import { ExtractedData, NarrativeData } from '../types';
 import { calculateKpis } from '../kpiCalculator';
 import { selectLatestYear } from '../aiService';
-import { Download, FileText } from 'lucide-react';
+import { Download, FileText, ChevronRight } from 'lucide-react';
 
 interface Props {
   extractedData: ExtractedData;
@@ -10,6 +10,8 @@ interface Props {
   sourceFiles: File[];
   /** Chiamata dopo il primo download del .doc — abilita il warning di rigenerazione */
   onDocxDownloaded?: () => void;
+  /** Se fornita, il breadcrumb "Verifica dati" diventa cliccabile */
+  onBackToVerification?: () => void;
 }
 
 const fmt = (v: number | null | undefined): string => {
@@ -58,8 +60,6 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
   const piva     = String(data.vatNumber?.value ?? 'N.D.');
   const residuo  = data.gseResidual?.value ?? null;
   const years    = data.yearsData;
-  // FIX: yearsData è ordinato decrescente — selectLatestYear trova il max per anno
-  // invece di prendere [length-1] che restituirebbe l'anno più vecchio.
   const lastYear = selectLatestYear(years);
   const kpis     = calculateKpis(lastYear, residuo);
   const annoKpi  = lastYear?.year ?? 'N.D.';
@@ -71,7 +71,6 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
 
   const checklist = data.checklist;
 
-  // Checklist row con fonte testuale
   const checkRow = (label: string, item: { presente: boolean; dettaglio: string; fonteTestuale?: string | null; page?: number | null }) => {
     const icon      = item.presente ? '&#9888;' : '&#10003;';
     const iconColor = item.presente ? '#b91c1c' : '#166534';
@@ -215,7 +214,6 @@ h3 { font-size: 9.5pt; font-weight: bold; color: #1e3a5f; margin: 10px 0 2px 0; 
 p   { font-size: 10pt; margin: 0 0 5px 0; color: #374151; }
 .muted { font-size: 8.5pt; color: #6b7280; }
 
-/* Tabelle compatte */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -401,7 +399,12 @@ ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
 </html>`;
 };
 
-export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData, onDocxDownloaded }) => {
+export const ReportViewer: React.FC<Props> = ({
+  extractedData,
+  narrativeData,
+  onDocxDownloaded,
+  onBackToVerification,
+}) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const htmlContent = buildHtml(extractedData, narrativeData);
   const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
@@ -429,6 +432,32 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData, on
 
   return (
     <div className="space-y-4">
+
+      {/* Breadcrumb */}
+      <nav aria-label="Navigazione flusso" className="flex items-center gap-1.5 text-sm">
+        {/* Step 1 — Analisi (sempre non cliccabile, si torna con "Nuova analisi") */}
+        <span className="text-slate-400">Analisi</span>
+
+        <ChevronRight className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
+
+        {/* Step 2 — Verifica dati: cliccabile solo se la prop è fornita (sessioni non-readOnly) */}
+        {onBackToVerification ? (
+          <button
+            onClick={onBackToVerification}
+            className="text-blue-600 hover:text-blue-800 hover:underline underline-offset-2 transition-colors"
+          >
+            Verifica dati
+          </button>
+        ) : (
+          <span className="text-slate-400">Verifica dati</span>
+        )}
+
+        <ChevronRight className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
+
+        {/* Step 3 — Report: step attivo */}
+        <span className="font-semibold text-slate-700">Report</span>
+      </nav>
+
       {/* Toolbar */}
       <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
         <div className="flex items-center gap-3">
