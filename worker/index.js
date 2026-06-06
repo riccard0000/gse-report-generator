@@ -11,19 +11,17 @@
  *   POST /history     — crea/aggiorna record storico
  *   GET  /history     — lista metadata ExtractionMeta[]
  *   GET  /history/:id — record completo ExtractionRecord
- *   PUT  /files/:key  — upload PDF su R2
- *   GET  /files/:key  — download PDF da R2
- *   DELETE /files/:key — elimina PDF da R2
+ *   PUT  /files/:key  — upload PDF su KV (Base64, TTL 90 giorni)
+ *   GET  /files/:key  — download PDF da KV
+ *   DELETE /files/:key — elimina PDF da KV
  *   OPTIONS *         — preflight CORS
  *
- * KV NAMESPACE BINDING: GSE_CONFIG (unico namespace)
- *   gse_model_config  → modelli AI primary/fallback
- *   gse_prompt        → prompt custom estrazione + narrativa
- *   history_index     → array metadati storico
- *   history:<ts>:<cf> → record completo singola estrazione
- *
- * R2 BUCKET BINDING: GSE_FILES
- *   files/<historyId>/<filename> → PDF bilanci caricati dall'utente
+ * KV NAMESPACE BINDING: GSE_CONFIG (unico namespace, nessuna carta richiesta)
+ *   gse_model_config  → modelli AI primary/fallback          (no TTL)
+ *   gse_prompt        → prompt custom estrazione + narrativa  (no TTL)
+ *   history_index     → array metadati storico               (no TTL)
+ *   history:<ts>:<cf> → record completo singola estrazione   (no TTL)
+ *   file:<key>        → PDF bilanci in Base64                (TTL 90 giorni)
  */
 
 const ALLOWED_ORIGINS = [
@@ -39,6 +37,9 @@ const OPENROUTER_MODELS_URL  = 'https://openrouter.ai/api/v1/models';
 const KV_MODELS_KEY    = 'gse_model_config';
 const KV_PROMPTS_KEY   = 'gse_prompt';
 const KV_HISTORY_INDEX = 'history_index';
+
+// TTL PDF: 90 giorni in secondi
+const PDF_TTL_SECONDS = 60 * 60 * 24 * 90;
 
 // ── Valori di default ────────────────────────────────────────────────────────
 const DEFAULT_MODELS = {
@@ -75,7 +76,7 @@ function jsonResponse(data, status = 200, corsHeaders = {}) {
 }
 
 function metaFromRecord(record) {
-  const ed = record.extractedData ?? record.confirmedData ?? null;
+  const ed = record.confirmedData ?? record.extractedData ?? null;
   return {
     id:          record.id,
     timestamp:   record.timestamp,
@@ -95,12 +96,31 @@ async function parseBody(request) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+/** Converte ArrayBuffer in stringa Base64 */
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Converte stringa Base64 in Uint8Array */
+function base64ToUint8Array(b64) {
+  const binary = atob(b64);
+  const bytes  = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export default {
   async fetch(request, env) {
     const origin      = request.headers.get('Origin') ?? '';
     const corsHeaders = getCorsHeaders(origin);
     const kv          = env.GSE_CONFIG;
-    const r2          = env.GSE_FILES;
 
     if (!corsHeaders) return new Response('Forbidden', { status: 403 });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
@@ -108,34 +128,39 @@ export default {
     const url      = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
-    // ── PUT /files/:key  — upload PDF su R2 ────────────────────────────────
+    // ── PUT /files/:key  — upload PDF su KV (Base64, TTL 90 giorni) ────────
     if (request.method === 'PUT' && pathname.startsWith('/files/')) {
-      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
       if (!key) return jsonResponse({ error: 'Key mancante.' }, 400, corsHeaders);
       try {
-        await r2.put(key, request.body, {
-          httpMetadata: { contentType: 'application/pdf' },
-        });
+        const arrayBuf = await request.arrayBuffer();
+        if (arrayBuf.byteLength > 24 * 1024 * 1024) {
+          return jsonResponse({ error: 'File troppo grande (max 24 MB).' }, 413, corsHeaders);
+        }
+        const b64 = arrayBufferToBase64(arrayBuf);
+        await kv.put(`file:${key}`, b64, { expirationTtl: PDF_TTL_SECONDS });
         return jsonResponse({ ok: true, key }, 200, corsHeaders);
       } catch (e) {
         return jsonResponse({ error: String(e) }, 500, corsHeaders);
       }
     }
 
-    // ── GET /files/:key  — download PDF da R2 ──────────────────────────────
+    // ── GET /files/:key  — download PDF da KV ────────────────────────────
     if (request.method === 'GET' && pathname.startsWith('/files/')) {
-      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
       try {
-        const object = await r2.get(key);
-        if (!object) return new Response('Not found', { status: 404, headers: corsHeaders });
-        return new Response(object.body, {
+        const b64 = await kv.get(`file:${key}`);
+        if (!b64) return new Response('Not found', { status: 404, headers: corsHeaders });
+        const bytes    = base64ToUint8Array(b64);
+        const filename = decodeURIComponent(key.split('/').pop() ?? 'documento.pdf');
+        return new Response(bytes, {
           status: 200,
           headers: {
             ...corsHeaders,
             'Content-Type':        'application/pdf',
-            'Content-Disposition': `inline; filename="${key.split('/').pop()}"`,
+            'Content-Disposition': `inline; filename="${filename}"`,
             'Cache-Control':       'private, max-age=3600',
           },
         });
@@ -144,12 +169,12 @@ export default {
       }
     }
 
-    // ── DELETE /files/:key  — elimina PDF da R2 ────────────────────────────
+    // ── DELETE /files/:key  — elimina PDF da KV ────────────────────────
     if (request.method === 'DELETE' && pathname.startsWith('/files/')) {
-      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
       try {
-        await r2.delete(key);
+        await kv.delete(`file:${key}`);
         return jsonResponse({ ok: true }, 200, corsHeaders);
       } catch (e) {
         return jsonResponse({ error: String(e) }, 500, corsHeaders);
