@@ -16,6 +16,7 @@
  *   Step 3 — dopo la generazione narrativa + download DOCX:
  *     saveExtractionStep3(id, narrativeData)   → step: 'reported'
  *     markDocxDownloaded(id)                   → docxDownloaded: true
+ *     resetDocxDownloaded(id)                  → docxDownloaded: false (dopo rigenera confermato)
  *
  * Lettura:
  *   listHistory()          → GET /history
@@ -135,6 +136,20 @@ export async function markDocxDownloaded(id: string): Promise<boolean> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, step: 'docx_downloaded' }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Resetta il flag docxDownloaded dopo una rigenerazione confermata ──────────
+export async function resetDocxDownloaded(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${WORKER_URL}/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, step: 'docx_reset' }),
     });
     return res.ok;
   } catch {
