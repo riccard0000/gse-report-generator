@@ -15,7 +15,7 @@ import {
 } from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
-  Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
+  Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History, ArrowLeft,
 } from 'lucide-react';
 
 type AppState = 'idle' | 'extracting' | 'verifying' | 'generating' | 'done' | 'error';
@@ -142,6 +142,11 @@ function AppInner() {
     step1Promise.current = Promise.resolve(null);
   };
 
+  // ── Torna alla verifica dati dal ReportViewer ────────────────────────────────
+  const handleBackToVerification = useCallback(() => {
+    setAppState('verifying');
+  }, []);
+
   // ── Genera narrativa (core) ───────────────────────────────────────────────────
   const doGenerateNarrative = useCallback(async (finalData: ExtractedData) => {
     try {
@@ -179,9 +184,17 @@ function AppInner() {
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  // ── Conferma dati dalla DataVerification ───────────────────────────────────────────
+  // ── Conferma dati dalla DataVerification ─────────────────────────────────────
+  // Se l'utente torna alla verifica e riconferma mentre docxDownloaded=true,
+  // mostriamo la stessa modale di warning usata da handleRegenerateNarrative
+  // per evitare che il percorso "torna + riconferma" bypassi la protezione.
   const handleApprove = useCallback(async (finalData: ExtractedData) => {
-    await doGenerateNarrative(finalData);
+    if (currentDocxDld.current) {
+      pendingRegenData.current = finalData;
+      setShowRegenWarning(true);
+    } else {
+      await doGenerateNarrative(finalData);
+    }
   }, [doGenerateNarrative]);
 
   // ── Rigenera narrativa (con eventuale warning se DOCX già scaricato) ────────
@@ -274,6 +287,10 @@ function AppInner() {
   const showUpload       = appState === 'idle' || appState === 'extracting' || appState === 'error';
   const showVerification = appState === 'verifying' || appState === 'generating';
 
+  // Il bottone "Torna alla verifica" è disponibile solo su sessioni non-readOnly
+  // (analisi fresh o demo) dove i file sono ancora in memoria.
+  const canGoBackToVerification = appState === 'done' && !isReadOnly && files.length > 0;
+
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'home',        label: 'Analisi',      icon: <Home className="w-5 h-5" /> },
     { id: 'diagnostics', label: 'Diagnostica',  icon: <Stethoscope className="w-5 h-5" /> },
@@ -351,7 +368,7 @@ function AppInner() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {isDemoMode && appState === 'verifying' && (
+              {isDemoMode && (appState === 'verifying' || appState === 'done') && (
                 <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
                   <FlaskConical className="w-3.5 h-3.5" /> DEMO — GEOSOL 2022-2024
                 </span>
@@ -362,6 +379,15 @@ function AppInner() {
                   className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
                 >
                   <History className="w-4 h-4" /> Storico
+                </button>
+              )}
+              {/* Torna alla verifica: disponibile solo su sessioni fresh/demo (non readOnly) */}
+              {page === 'home' && canGoBackToVerification && (
+                <button
+                  onClick={handleBackToVerification}
+                  className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Verifica dati
                 </button>
               )}
               {page === 'home' && (appState === 'done' || appState === 'verifying') && (
