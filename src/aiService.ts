@@ -250,6 +250,18 @@ const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
 };
 
 /**
+ * Seleziona l'anno più recente da yearsData.
+ * yearsData è ordinato decrescente (2024→2023→2022), quindi NON usare
+ * [length-1] — restituirebbe l'anno più vecchio.
+ * Usiamo reduce per trovare il max in modo robusto indipendentemente
+ * dall'ordinamento dell'array.
+ */
+export const selectLatestYear = (yearsData: ExtractedData['yearsData']): ExtractedData['yearsData'][number] =>
+  yearsData.reduce((best, curr) =>
+    Number(curr.year) > Number(best.year) ? curr : best
+  );
+
+/**
  * Estrae i dati strutturati da tutti i PDF.
  */
 export const extractDataFromPdfs = async (
@@ -340,7 +352,10 @@ export const generateNarrative = async (
   onProgress?: (msg: string) => void
 ): Promise<NarrativeData> => {
   onProgress?.('Calcolo KPI deterministici...');
-  const lastYear = data.yearsData[data.yearsData.length - 1];
+  // FIX: yearsData è ordinato decrescente (anno più recente prima).
+  // Usiamo selectLatestYear (reduce su max year) invece di [length-1]
+  // che restituirebbe l'anno più vecchio.
+  const lastYear = selectLatestYear(data.yearsData);
   const kpis     = calculateKpis(lastYear, data.gseResidual?.value ?? null);
 
   onProgress?.('Generazione narrativa tecnica (seconda chiamata AI)...');

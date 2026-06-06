@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { ExtractedData, NarrativeData } from '../types';
 import { calculateKpis } from '../kpiCalculator';
+import { selectLatestYear } from '../aiService';
 import { Download, FileText } from 'lucide-react';
 
 interface Props {
@@ -57,7 +58,9 @@ const buildHtml = (data: ExtractedData, narrative: NarrativeData): string => {
   const piva     = String(data.vatNumber?.value ?? 'N.D.');
   const residuo  = data.gseResidual?.value ?? null;
   const years    = data.yearsData;
-  const lastYear = years[years.length - 1];
+  // FIX: yearsData è ordinato decrescente — selectLatestYear trova il max per anno
+  // invece di prendere [length-1] che restituirebbe l'anno più vecchio.
+  const lastYear = selectLatestYear(years);
   const kpis     = calculateKpis(lastYear, residuo);
   const annoKpi  = lastYear?.year ?? 'N.D.';
   const esitoStr = narrative.esito ?? 'CAUTELA';
