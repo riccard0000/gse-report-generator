@@ -1,15 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   History, Download, Eye, X, Loader2, AlertCircle,
-  FlaskConical, ChevronRight, CheckCircle2, Clock,
+  FlaskConical, ChevronRight, CheckCircle2, Clock, FileText,
 } from 'lucide-react';
 import { ExtractionMeta, ExtractionRecord, ExtractedData } from '../types';
 import { listHistory, getHistoryRecord } from '../lib/extractionStorage';
 import { MOCK_EXTRACTED_DATA } from '../mockData';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleString('it-IT', {
     day: '2-digit', month: '2-digit', year: 'numeric',
@@ -21,14 +18,38 @@ function downloadJson(data: unknown, filename: string) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  a.click();
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------
-// DiffViewer — confronto campo per campo tra dati AI e dati confermati
+// Badge step
+// ---------------------------------------------------------------------------
+const StepBadge: React.FC<{ step: ExtractionMeta['step']; docxDownloaded?: boolean }> = ({ step, docxDownloaded }) => {
+  if (step === 'reported') {
+    return (
+      <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 flex items-center gap-1">
+        <FileText className="w-2.5 h-2.5" />
+        Report{docxDownloaded ? ' · scaricato' : ''}
+      </span>
+    );
+  }
+  if (step === 'confirmed') {
+    return (
+      <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
+        Confermato
+      </span>
+    );
+  }
+  return (
+    <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+      Solo AI
+    </span>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// DiffViewer
 // ---------------------------------------------------------------------------
 const YEAR_FIELDS = [
   'ricavi','ebit','ammortamenti','utileNetto','interessiPassivi',
@@ -52,14 +73,12 @@ const DiffRow: React.FC<DiffRowProps> = ({ label, valA, valB, labelA, labelB }) 
   );
 };
 
-interface DiffViewerProps { record: ExtractionRecord; }
-const DiffViewer: React.FC<DiffViewerProps> = ({ record }) => {
-  const ai       = record.extractedData;
-  const conf     = record.confirmedData;
-  const labelA   = 'Dati AI estratti';
-  const labelB   = conf ? 'Dati confermati' : 'Mock atteso';
-  const dataB    = conf ?? MOCK_EXTRACTED_DATA;
-
+const DiffViewer: React.FC<{ record: ExtractionRecord }> = ({ record }) => {
+  const ai     = record.extractedData;
+  const conf   = record.confirmedData;
+  const labelA = 'Dati AI estratti';
+  const labelB = conf ? 'Dati confermati' : 'Mock atteso';
+  const dataB  = conf ?? MOCK_EXTRACTED_DATA;
   return (
     <div className="overflow-auto">
       <div className="flex items-center gap-4 mb-3 text-xs">
@@ -97,51 +116,44 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ record }) => {
 };
 
 // ---------------------------------------------------------------------------
-// JsonModal — modale con 3 tab: JSON AI, JSON confermato, Diff
+// JsonModal — 3 tab: JSON AI, JSON confermato, Narrativa, Diff
 // ---------------------------------------------------------------------------
-interface JsonModalProps {
-  meta:    ExtractionMeta;
-  record:  ExtractionRecord;
-  onClose: () => void;
-}
-
-const JsonModal: React.FC<JsonModalProps> = ({ meta, record, onClose }) => {
-  const [tab, setTab] = useState<'extracted' | 'confirmed' | 'diff'>('extracted');
-
+const JsonModal: React.FC<{ meta: ExtractionMeta; record: ExtractionRecord; onClose: () => void }> = ({ meta, record, onClose }) => {
+  const [tab, setTab] = useState<'extracted' | 'confirmed' | 'narrative' | 'diff'>('extracted');
   const handleDownload = (data: ExtractedData | null, suffix: string) => {
     if (!data) return;
     const safeName = (meta.companyName || meta.vatNumber).replace(/[^a-zA-Z0-9_-]/g, '_');
     downloadJson(data, `extraction_${safeName}_${suffix}_${meta.timestamp}.json`);
   };
-
-  const tabs: { id: 'extracted' | 'confirmed' | 'diff'; label: string; disabled?: boolean }[] = [
-    { id: 'extracted', label: 'JSON AI estratto' },
-    { id: 'confirmed', label: 'JSON confermato', disabled: !record.confirmedData },
-    { id: 'diff',      label: 'Confronto' },
+  const tabs: { id: typeof tab; label: string; disabled?: boolean }[] = [
+    { id: 'extracted',  label: 'JSON AI estratto' },
+    { id: 'confirmed',  label: 'JSON confermato',  disabled: !record.confirmedData },
+    { id: 'narrative',  label: 'Narrativa AI',     disabled: !record.narrativeData },
+    { id: 'diff',       label: 'Confronto' },
   ];
-
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div>
             <h2 className="text-base font-bold text-slate-900">{meta.companyName || meta.vatNumber}</h2>
-            <p className="text-xs text-slate-500">{formatDate(meta.timestamp)} · anni: {meta.years.join(', ')} · step: <span className={`font-medium ${meta.step === 'confirmed' ? 'text-green-600' : 'text-amber-600'}`}>{meta.step}</span></p>
+            <p className="text-xs text-slate-500">
+              {formatDate(meta.timestamp)} · anni: {meta.years.join(', ')} ·{' '}
+              <span className={`font-medium ${
+                meta.step === 'reported'  ? 'text-green-600' :
+                meta.step === 'confirmed' ? 'text-blue-600' : 'text-amber-600'
+              }`}>{meta.step}</span>
+              {meta.docxDownloaded && <span className="ml-1 text-green-600">· DOCX scaricato</span>}
+            </p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => handleDownload(record.extractedData, 'ai')}
-              disabled={!record.extractedData}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg transition-colors"
-            >
+            <button onClick={() => handleDownload(record.extractedData, 'ai')} disabled={!record.extractedData}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg transition-colors">
               <Download className="w-3.5 h-3.5" /> Scarica AI
             </button>
             {record.confirmedData && (
-              <button
-                onClick={() => handleDownload(record.confirmedData, 'confermato')}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-              >
+              <button onClick={() => handleDownload(record.confirmedData, 'confermato')}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
                 <Download className="w-3.5 h-3.5" /> Scarica Confermato
               </button>
             )}
@@ -150,22 +162,16 @@ const JsonModal: React.FC<JsonModalProps> = ({ meta, record, onClose }) => {
             </button>
           </div>
         </div>
-        {/* Tabs */}
         <div className="flex border-b border-slate-200 px-6">
           {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => !t.disabled && setTab(t.id)}
-              disabled={t.disabled}
+            <button key={t.id} onClick={() => !t.disabled && setTab(t.id)} disabled={t.disabled}
               className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
                 tab === t.id ? 'border-blue-600 text-blue-700'
                 : t.disabled ? 'border-transparent text-slate-300 cursor-not-allowed'
                 : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >{t.label}</button>
+              }`}>{t.label}</button>
           ))}
         </div>
-        {/* Content */}
         <div className="flex-1 overflow-auto p-4">
           {tab === 'extracted' && (
             <pre className="text-xs font-mono bg-slate-50 rounded-xl p-4 overflow-auto whitespace-pre-wrap break-all leading-relaxed text-slate-800">
@@ -177,6 +183,16 @@ const JsonModal: React.FC<JsonModalProps> = ({ meta, record, onClose }) => {
               {JSON.stringify(record.confirmedData, null, 2)}
             </pre>
           )}
+          {tab === 'narrative' && record.narrativeData && (
+            <div className="space-y-4">
+              {Object.entries(record.narrativeData).map(([key, val]) => (
+                <div key={key} className="bg-slate-50 rounded-xl p-4">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">{key}</p>
+                  <p className="text-sm text-slate-800 leading-relaxed">{String(val)}</p>
+                </div>
+              ))}
+            </div>
+          )}
           {tab === 'diff' && <DiffViewer record={record} />}
         </div>
       </div>
@@ -185,18 +201,18 @@ const JsonModal: React.FC<JsonModalProps> = ({ meta, record, onClose }) => {
 };
 
 // ---------------------------------------------------------------------------
-// ExtractionHistory — sidebar/pannello storico
+// ExtractionHistory
 // ---------------------------------------------------------------------------
 export interface ExtractionHistoryProps {
   onLoadExtraction: (record: ExtractionRecord, meta: ExtractionMeta) => void;
 }
 
 export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtraction }) => {
-  const [list,        setList]        = useState<ExtractionMeta[]>([]);
-  const [loading,     setLoading]     = useState(false);
-  const [error,       setError]       = useState<string | null>(null);
-  const [loadingId,   setLoadingId]   = useState<string | null>(null);
-  const [previewRec,  setPreviewRec]  = useState<{ meta: ExtractionMeta; record: ExtractionRecord } | null>(null);
+  const [list,       setList]       = useState<ExtractionMeta[]>([]);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState<string | null>(null);
+  const [loadingId,  setLoadingId]  = useState<string | null>(null);
+  const [previewRec, setPreviewRec] = useState<{ meta: ExtractionMeta; record: ExtractionRecord } | null>(null);
 
   const fetchList = useCallback(async () => {
     setLoading(true); setError(null);
@@ -215,25 +231,20 @@ export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtr
     return rec;
   };
 
-  const handleLoad = async (meta: ExtractionMeta) => {
-    const rec = await loadRecord(meta);
-    if (rec) onLoadExtraction(rec, meta);
-  };
-
-  const handlePreview = async (meta: ExtractionMeta, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const rec = await loadRecord(meta);
-    if (rec) setPreviewRec({ meta, record: rec });
-  };
-
+  const handleLoad    = async (meta: ExtractionMeta) => { const rec = await loadRecord(meta); if (rec) onLoadExtraction(rec, meta); };
+  const handlePreview = async (meta: ExtractionMeta, e: React.MouseEvent) => { e.stopPropagation(); const rec = await loadRecord(meta); if (rec) setPreviewRec({ meta, record: rec }); };
   const handleDownload = async (meta: ExtractionMeta, e: React.MouseEvent) => {
     e.stopPropagation();
     const rec = await loadRecord(meta);
     if (!rec) return;
     const safeName = (meta.companyName || meta.vatNumber).replace(/[^a-zA-Z0-9_-]/g, '_');
-    // Scarica il payload più completo disponibile
-    const data = rec.confirmedData ?? rec.extractedData;
-    downloadJson({ extractedData: rec.extractedData, confirmedData: rec.confirmedData }, `history_${safeName}_${meta.timestamp}.json`);
+    downloadJson({ extractedData: rec.extractedData, confirmedData: rec.confirmedData, narrativeData: rec.narrativeData }, `history_${safeName}_${meta.timestamp}.json`);
+  };
+
+  const stepIcon = (step: ExtractionMeta['step']) => {
+    if (step === 'reported')  return <FileText className="w-3 h-3 text-green-500 flex-shrink-0" />;
+    if (step === 'confirmed') return <CheckCircle2 className="w-3 h-3 text-blue-500 flex-shrink-0" />;
+    return <Clock className="w-3 h-3 text-amber-400 flex-shrink-0" />;
   };
 
   return (
@@ -258,9 +269,7 @@ export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtr
 
         <div className="flex-1 overflow-y-auto py-2">
           {loading && list.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
-            </div>
+            <div className="flex items-center justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-slate-400" /></div>
           )}
           {!loading && list.length === 0 && (
             <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
@@ -281,10 +290,7 @@ export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtr
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-0.5">
                       {meta.isDemoMode && <FlaskConical className="w-3 h-3 text-amber-500 flex-shrink-0" />}
-                      {meta.step === 'confirmed'
-                        ? <CheckCircle2 className="w-3 h-3 text-green-500 flex-shrink-0" />
-                        : <Clock className="w-3 h-3 text-amber-400 flex-shrink-0" />
-                      }
+                      {stepIcon(meta.step)}
                       <span className="text-xs font-semibold text-slate-800 truncate">{meta.companyName || meta.vatNumber}</span>
                     </div>
                     <p className="text-[10px] text-slate-400">{formatDate(meta.timestamp)}</p>
@@ -295,27 +301,17 @@ export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtr
                     : <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-blue-400 mt-0.5 flex-shrink-0 transition-colors" />
                   }
                 </div>
-                {/* Step badge */}
                 <div className="mt-1.5">
-                  <span className={`text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full ${
-                    meta.step === 'confirmed' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
-                  }`}>
-                    {meta.step === 'confirmed' ? 'Confermato' : 'Solo AI'}
-                  </span>
+                  <StepBadge step={meta.step} docxDownloaded={meta.docxDownloaded} />
                 </div>
-                {/* Azioni inline visibili su hover */}
                 <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={e => handlePreview(meta, e)}
-                    className="flex items-center gap-1 text-[10px] px-2 py-1 bg-white border border-slate-200 hover:border-blue-400 hover:text-blue-600 rounded-md transition-colors"
-                  >
+                  <button onClick={e => handlePreview(meta, e)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 bg-white border border-slate-200 hover:border-blue-400 hover:text-blue-600 rounded-md transition-colors">
                     <Eye className="w-3 h-3" /> Anteprima
                   </button>
-                  <button
-                    onClick={e => handleDownload(meta, e)}
-                    className="flex items-center gap-1 text-[10px] px-2 py-1 bg-white border border-slate-200 hover:border-blue-400 hover:text-blue-600 rounded-md transition-colors"
-                  >
-                    <Download className="w-3 h-3" /> Scarica
+                  <button onClick={e => handleDownload(meta, e)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 bg-white border border-slate-200 hover:border-blue-400 hover:text-blue-600 rounded-md transition-colors">
+                    <Download className="w-3 h-3" /> Scarica JSON
                   </button>
                 </div>
               </div>
@@ -325,11 +321,7 @@ export const ExtractionHistory: React.FC<ExtractionHistoryProps> = ({ onLoadExtr
       </div>
 
       {previewRec && (
-        <JsonModal
-          meta={previewRec.meta}
-          record={previewRec.record}
-          onClose={() => setPreviewRec(null)}
-        />
+        <JsonModal meta={previewRec.meta} record={previewRec.record} onClose={() => setPreviewRec(null)} />
       )}
     </>
   );

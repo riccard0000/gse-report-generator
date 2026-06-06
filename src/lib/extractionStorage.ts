@@ -2,38 +2,36 @@
  * extractionStorage.ts
  * Wrapper per le chiamate al Worker Cloudflare.
  *
- * Flusso in 2 step:
+ * Flusso in 3 step:
  *   Step 1 — dopo l'estrazione AI:
  *     saveExtractionStep1(extractedData, isDemoMode, files)
- *     → upload PDF su R2 (PUT /files/<key>)
+ *     → upload PDF su KV (PUT /files/<key>)
  *     → POST /history  { step: 'extracted', extractedData, isDemoMode, fileKeys }
- *     → ritorna l'id del record creato (da conservare in stato React)
+ *     → ritorna l'id del record creato
  *
  *   Step 2 — dopo la conferma dati dall'utente:
  *     saveExtractionStep2(id, confirmedData, isDemoMode)
  *     → POST /history  { id, step: 'confirmed', confirmedData, isDemoMode }
- *     → aggiorna il record esistente aggiungendo confirmedData
+ *
+ *   Step 3 — dopo la generazione narrativa + download DOCX:
+ *     saveExtractionStep3(id, narrativeData)   → step: 'reported'
+ *     markDocxDownloaded(id)                   → docxDownloaded: true
  *
  * Lettura:
- *   listHistory()          → GET /history          → ExtractionMeta[]
- *   getHistoryRecord(id)   → GET /history/:id       → ExtractionRecord
- *   downloadPdf(key)       → GET /files/:key        → File PDF
+ *   listHistory()          → GET /history
+ *   getHistoryRecord(id)   → GET /history/:id
+ *   downloadPdf(key)       → GET /files/:key
  */
 
-import { ExtractedData, ExtractionMeta, ExtractionRecord } from '../types';
+import { ExtractedData, ExtractionMeta, ExtractionRecord, NarrativeData } from '../types';
 import { OPENROUTER_ENDPOINT } from '../constants';
 
-// Riusa VITE_PROXY_URL (già configurata) come base URL per history e files
 export const WORKER_URL = OPENROUTER_ENDPOINT?.replace(/\/$/, '') ?? '';
 
-// ── Upload singolo PDF su R2 ───────────────────────────────────────────────────
-export async function uploadPdf(
-  historyId: string,
-  file: File,
-): Promise<string | null> {
-  // Chiave R2: "files/<historyId_sanitizzato>/<filename>"
-  const safeId  = historyId.replace(/[^a-zA-Z0-9_:-]/g, '_');
-  const key     = `files/${safeId}/${encodeURIComponent(file.name)}`;
+// ── Upload singolo PDF su KV ──────────────────────────────────────────────────
+export async function uploadPdf(historyId: string, file: File): Promise<string | null> {
+  const safeId = historyId.replace(/[^a-zA-Z0-9_:-]/g, '_');
+  const key    = `files/${safeId}/${encodeURIComponent(file.name)}`;
   try {
     const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`, {
       method: 'PUT',
@@ -47,11 +45,8 @@ export async function uploadPdf(
   }
 }
 
-// ── Download PDF da R2 come File ─────────────────────────────────────────────────
-export async function downloadPdf(
-  key: string,
-  fileName: string,
-): Promise<File | null> {
+// ── Download PDF da KV come File ──────────────────────────────────────────────
+export async function downloadPdf(key: string, fileName: string): Promise<File | null> {
   try {
     const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`);
     if (!res.ok) return null;
@@ -62,14 +57,13 @@ export async function downloadPdf(
   }
 }
 
-// ── Step 1: salva estrazione AI grezza + upload PDF ──────────────────────────────
+// ── Step 1: salva estrazione AI grezza + upload PDF ───────────────────────────
 export async function saveExtractionStep1(
   extractedData: ExtractedData,
   isDemoMode: boolean,
   files?: File[],
 ): Promise<string | null> {
   try {
-    // 1a. Crea il record KV per ottenere l'id
     const res = await fetch(`${WORKER_URL}/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -80,12 +74,11 @@ export async function saveExtractionStep1(
     const id   = json.id ?? null;
     if (!id) return null;
 
-    // 1b. Upload PDF in parallelo (fire-and-forget per non bloccare la UI)
+    // Upload PDF in parallelo (fire-and-forget)
     if (files && files.length > 0 && !isDemoMode) {
       Promise.all(files.map(f => uploadPdf(id, f))).then(async keys => {
         const fileKeys = keys.filter((k): k is string => k !== null);
         if (fileKeys.length === 0) return;
-        // Aggiorna il record con le chiavi R2
         await fetch(`${WORKER_URL}/history`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -93,14 +86,13 @@ export async function saveExtractionStep1(
         });
       }).catch(() => { /* fallback silenzioso */ });
     }
-
     return id;
   } catch {
     return null;
   }
 }
 
-// ── Step 2: aggiunge dati confermati al record esistente ─────────────────────────
+// ── Step 2: salva dati confermati dall'utente ─────────────────────────────────
 export async function saveExtractionStep2(
   id: string,
   confirmedData: ExtractedData,
@@ -118,7 +110,39 @@ export async function saveExtractionStep2(
   }
 }
 
-// ── Lista metadata storico ────────────────────────────────────────────────────────────
+// ── Step 3: salva narrativa generata → step diventa 'reported' ───────────────
+export async function saveExtractionStep3(
+  id: string,
+  narrativeData: NarrativeData,
+  isDemoMode: boolean,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${WORKER_URL}/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, step: 'reported', narrativeData, isDemoMode }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Marca il DOCX come scaricato ──────────────────────────────────────────────
+export async function markDocxDownloaded(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${WORKER_URL}/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, step: 'docx_downloaded' }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Lista metadata storico ────────────────────────────────────────────────────
 export async function listHistory(): Promise<ExtractionMeta[]> {
   try {
     const res = await fetch(`${WORKER_URL}/history`);
@@ -129,7 +153,7 @@ export async function listHistory(): Promise<ExtractionMeta[]> {
   }
 }
 
-// ── Record completo (extractedData + confirmedData) ─────────────────────────────────
+// ── Record completo ───────────────────────────────────────────────────────────
 export async function getHistoryRecord(id: string): Promise<ExtractionRecord | null> {
   try {
     const res = await fetch(`${WORKER_URL}/history/${encodeURIComponent(id)}`);

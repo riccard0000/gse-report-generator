@@ -9,7 +9,10 @@ import { ExtractionHistory } from './components/ExtractionHistory';
 import { ExtractedData, NarrativeData, ExtractionMeta, ExtractionRecord } from './types';
 import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { ModelConfigProvider, useModelConfig } from './context/ModelConfigContext';
-import { saveExtractionStep1, saveExtractionStep2, downloadPdf } from './lib/extractionStorage';
+import {
+  saveExtractionStep1, saveExtractionStep2, saveExtractionStep3,
+  markDocxDownloaded, downloadPdf,
+} from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
   Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
@@ -20,20 +23,11 @@ type Page = 'home' | 'settings' | 'diagnostics';
 
 const REQUIRED_FILES = 3;
 
-/**
- * Ricava l'anno (4 cifre) dal nome di un file PDF.
- * Es: "OUT_LASTBIL_IC01637000892-2024-GEOSOL.pdf" → "2024"
- */
 const guessYearFromFileName = (fileName: string): string | null => {
   const match = fileName.match(/(20\d{2})/);
   return match ? match[1] : null;
 };
 
-/**
- * Dopo l'estrazione principale, verifica se mancano anni attesi (uno per ogni PDF).
- * Per ogni anno mancante riprocessa automaticamente il PDF corrispondente
- * e inietta il risultato in extractedData.
- */
 const detectAndReprocessMissingYears = async (
   extracted: ExtractedData,
   files: File[],
@@ -41,95 +35,67 @@ const detectAndReprocessMissingYears = async (
   onProgress: (msg: string) => void
 ): Promise<ExtractedData> => {
   const extractedYears = new Set((extracted.yearsData ?? []).map((y) => y.year));
-
-  const missingFiles: File[] = files.filter((f) => {
+  const missingFiles   = files.filter((f) => {
     const year = guessYearFromFileName(f.name);
     return year !== null && !extractedYears.has(year);
   });
-
   if (missingFiles.length === 0) return extracted;
-
-  const missingYears = missingFiles
-    .map((f) => guessYearFromFileName(f.name))
-    .filter(Boolean)
-    .join(', ');
-
+  const missingYears = missingFiles.map((f) => guessYearFromFileName(f.name)).filter(Boolean).join(', ');
   onProgress(`⚠️ Anno/i mancante/i: ${missingYears}. Riprocesso automatico in corso...`);
-
   let result = extracted;
   for (const file of missingFiles) {
     const year = guessYearFromFileName(file.name)!;
     onProgress(`🔄 Riprocesso anno ${year}: ${file.name}...`);
     try {
-      const retry = await reprocessSinglePdf(file, getPromptCustom, (msg) =>
-        onProgress(`  [Retry ${year}] ${msg}`)
-      );
-      const newYears = (retry.yearsData ?? []).filter(
-        (y) => !result.yearsData.some((existing) => existing.year === y.year)
-      );
+      const retry   = await reprocessSinglePdf(file, getPromptCustom, (msg) => onProgress(`  [Retry ${year}] ${msg}`));
+      const newYears = (retry.yearsData ?? []).filter((y) => !result.yearsData.some((e) => e.year === y.year));
       if (newYears.length > 0) {
-        result = {
-          ...result,
-          yearsData: [...result.yearsData, ...newYears].sort(
-            (a, b) => Number(b.year) - Number(a.year)
-          ),
-        };
+        result = { ...result, yearsData: [...result.yearsData, ...newYears].sort((a, b) => Number(b.year) - Number(a.year)) };
         onProgress(`✅ Anno ${year} recuperato con successo.`);
       } else {
         onProgress(`⚠️ Anno ${year}: riprocessato ma nessun dato nuovo trovato.`);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      onProgress(`❌ Anno ${year}: riprocesso fallito — ${msg}`);
+      onProgress(`❌ Anno ${year}: riprocesso fallito — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
   return result;
 };
 
 function AppInner() {
   const { promptCustom } = useModelConfig();
 
-  const [files,          setFiles]          = useState<File[]>([]);
-  const [appState,       setAppState]       = useState<AppState>('idle');
-  const [progress,       setProgress]       = useState('');
-  const [extractedData,  setExtractedData]  = useState<ExtractedData | null>(null);
-  const [narrativeData,  setNarrativeData]  = useState<NarrativeData | null>(null);
-  const [error,          setError]          = useState<string | null>(null);
-  const [isDemoMode,     setIsDemoMode]     = useState(false);
-  const [page,           setPage]           = useState<Page>('home');
-  const [sidebarOpen,    setSidebarOpen]    = useState(false);
-  const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
+  const [files,               setFiles]               = useState<File[]>([]);
+  const [appState,            setAppState]            = useState<AppState>('idle');
+  const [progress,            setProgress]            = useState('');
+  const [extractedData,       setExtractedData]       = useState<ExtractedData | null>(null);
+  const [narrativeData,       setNarrativeData]       = useState<NarrativeData | null>(null);
+  const [error,               setError]               = useState<string | null>(null);
+  const [isDemoMode,          setIsDemoMode]          = useState(false);
+  const [page,                setPage]                = useState<Page>('home');
+  const [sidebarOpen,         setSidebarOpen]         = useState(false);
+  const [historySidebarOpen,  setHistorySidebarOpen]  = useState(false);
+  // true quando il record è caricato dallo storico con step 'confirmed' o 'reported'
+  const [isReadOnly,          setIsReadOnly]          = useState(false);
+  // true quando la narrativa viene rigenerata su un record che aveva già docxDownloaded=true
+  const [showRegenWarning,    setShowRegenWarning]    = useState(false);
+  const pendingRegenData      = useRef<ExtractedData | null>(null);
 
-  const step1Promise = useRef<Promise<string | null>>(Promise.resolve(null));
-  const currentHistoryId = useRef<string | null>(null);
+  const step1Promise       = useRef<Promise<string | null>>(Promise.resolve(null));
+  const currentHistoryId   = useRef<string | null>(null);
+  const currentDocxDld     = useRef<boolean>(false);
 
   const navigate = (p: Page) => { setPage(p); setSidebarOpen(false); };
 
+  // ── Analisi nuova ─────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async () => {
     if (files.length !== REQUIRED_FILES) return;
-    setError(null);
-    setIsDemoMode(false);
-    setAppState('extracting');
-    setExtractedData(null);
-    setNarrativeData(null);
-    currentHistoryId.current = null;
+    setError(null); setIsDemoMode(false); setIsReadOnly(false);
+    setAppState('extracting'); setExtractedData(null); setNarrativeData(null);
+    currentHistoryId.current = null; currentDocxDld.current = false;
     try {
-      // Step 1: estrazione principale
-      const extracted = await extractDataFromPdfs(
-        files,
-        () => promptCustom.extraction,
-        setProgress
-      );
-
-      // Step 2: rileva e riprocessa automaticamente gli anni mancanti
-      const complete = await detectAndReprocessMissingYears(
-        extracted,
-        files,
-        () => promptCustom.extraction,
-        setProgress
-      );
-
+      const extracted = await extractDataFromPdfs(files, () => promptCustom.extraction, setProgress);
+      const complete  = await detectAndReprocessMissingYears(extracted, files, () => promptCustom.extraction, setProgress);
       setExtractedData(complete);
       setAppState('verifying');
       step1Promise.current = saveExtractionStep1(complete, false, files);
@@ -140,12 +106,11 @@ function AppInner() {
     }
   }, [files, promptCustom.extraction]);
 
+  // ── Demo ──────────────────────────────────────────────────────────────────
   const handleLoadDemo = useCallback(async () => {
-    setError(null);
-    setIsDemoMode(true);
-    setAppState('extracting');
-    setProgress('Caricamento PDF di esempio...');
-    currentHistoryId.current = null;
+    setError(null); setIsDemoMode(true); setIsReadOnly(false);
+    setAppState('extracting'); setProgress('Caricamento PDF di esempio...');
+    currentHistoryId.current = null; currentDocxDld.current = false;
     try {
       const pdfUrls   = getMockPdfUrls();
       const demoFiles = await Promise.all(
@@ -169,62 +134,83 @@ function AppInner() {
     }
   }, []);
 
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const handleReset = () => {
-    setFiles([]);
-    setAppState('idle');
-    setExtractedData(null);
-    setNarrativeData(null);
-    setError(null);
-    setProgress('');
-    setIsDemoMode(false);
-    currentHistoryId.current = null;
+    setFiles([]); setAppState('idle'); setExtractedData(null); setNarrativeData(null);
+    setError(''); setProgress(''); setIsDemoMode(false); setIsReadOnly(false);
+    currentHistoryId.current = null; currentDocxDld.current = false;
     step1Promise.current = Promise.resolve(null);
   };
 
-  const handleApprove = useCallback(async (finalData: ExtractedData) => {
+  // ── Genera narrativa (core) ───────────────────────────────────────────────
+  const doGenerateNarrative = useCallback(async (finalData: ExtractedData) => {
     try {
       setAppState('generating');
       setProgress('Generazione del report in corso...');
-
-      const historyId = await step1Promise.current;
-      const resolvedId = historyId ?? currentHistoryId.current;
-
-      if (resolvedId) {
-        saveExtractionStep2(resolvedId, finalData, isDemoMode);
-      }
+      const historyId   = await step1Promise.current;
+      const resolvedId  = historyId ?? currentHistoryId.current;
+      if (resolvedId) saveExtractionStep2(resolvedId, finalData, isDemoMode);
 
       let narrative: NarrativeData;
       if (isDemoMode) {
         await new Promise((r) => setTimeout(r, 800));
         narrative = MOCK_NARRATIVE_DATA;
       } else {
-        narrative = await generateNarrative(
-          finalData,
-          () => promptCustom.narrative,
-          setProgress
-        );
+        narrative = await generateNarrative(finalData, () => promptCustom.narrative, setProgress);
       }
       setNarrativeData(narrative);
       setAppState('done');
+
+      // Salva step 'reported' con la narrativa
+      if (resolvedId) {
+        saveExtractionStep3(resolvedId, narrative, isDemoMode);
+        currentHistoryId.current = resolvedId;
+      }
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante la generazione del report');
       setAppState('error');
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  const handleLoadFromHistory = useCallback(async (
-    record: ExtractionRecord,
-    meta: ExtractionMeta,
-  ) => {
+  // ── Conferma dati dalla DataVerification ─────────────────────────────────
+  const handleApprove = useCallback(async (finalData: ExtractedData) => {
+    await doGenerateNarrative(finalData);
+  }, [doGenerateNarrative]);
+
+  // ── Rigenera narrativa (con eventuale warning se DOCX già scaricato) ──────
+  const handleRegenerateNarrative = useCallback((finalData: ExtractedData) => {
+    if (currentDocxDld.current) {
+      pendingRegenData.current = finalData;
+      setShowRegenWarning(true);
+    } else {
+      doGenerateNarrative(finalData);
+    }
+  }, [doGenerateNarrative]);
+
+  const confirmRegen = useCallback(() => {
+    setShowRegenWarning(false);
+    currentDocxDld.current = false;
+    if (pendingRegenData.current) doGenerateNarrative(pendingRegenData.current);
+    pendingRegenData.current = null;
+  }, [doGenerateNarrative]);
+
+  // ── DOCX scaricato ────────────────────────────────────────────────────────
+  const handleDocxDownloaded = useCallback(() => {
+    currentDocxDld.current = true;
+    if (currentHistoryId.current) markDocxDownloaded(currentHistoryId.current);
+  }, []);
+
+  // ── Carica da storico ─────────────────────────────────────────────────────
+  const handleLoadFromHistory = useCallback(async (record: ExtractionRecord, meta: ExtractionMeta) => {
     setHistorySidebarOpen(false);
-    setError(null);
-    setNarrativeData(null);
+    setError(null); setNarrativeData(null);
     setIsDemoMode(meta.isDemoMode);
     setProgress('Caricamento dallo storico...');
     setAppState('extracting');
     setPage('home');
     currentHistoryId.current = record.id;
-    step1Promise.current = Promise.resolve(record.id);
+    currentDocxDld.current   = record.docxDownloaded ?? false;
+    step1Promise.current     = Promise.resolve(record.id);
 
     const dataToLoad = record.confirmedData ?? record.extractedData;
     if (!dataToLoad) {
@@ -233,6 +219,25 @@ function AppInner() {
       return;
     }
 
+    // Se il record è 'reported' → apri direttamente ReportViewer
+    if (record.step === 'reported' && record.narrativeData) {
+      setExtractedData(dataToLoad);
+      setNarrativeData(record.narrativeData);
+      setIsReadOnly(true);
+      setAppState('done');
+      setProgress('');
+      return;
+    }
+
+    // Se il record è 'confirmed' → DataVerification in sola lettura
+    if (record.step === 'confirmed') {
+      setIsReadOnly(true);
+    } else {
+      // extracted → editabile
+      setIsReadOnly(false);
+    }
+
+    // Ripristina PDF se disponibili
     const fileKeys: string[] = (record as unknown as { fileKeys?: string[] }).fileKeys ?? [];
     if (fileKeys.length > 0 && !meta.isDemoMode) {
       setProgress('Ripristino PDF dallo storico...');
@@ -243,8 +248,7 @@ function AppInner() {
             return downloadPdf(key, fileName);
           })
         );
-        const validFiles = loaded.filter((f): f is File => f !== null);
-        setFiles(validFiles);
+        setFiles(loaded.filter((f): f is File => f !== null));
       } catch {
         setFiles([]);
       }
@@ -257,9 +261,9 @@ function AppInner() {
     setProgress('');
   }, []);
 
-  const isLoading         = appState === 'extracting' || appState === 'generating';
-  const showUpload        = appState === 'idle' || appState === 'extracting' || appState === 'error';
-  const showVerification  = appState === 'verifying' || appState === 'generating';
+  const isLoading        = appState === 'extracting' || appState === 'generating';
+  const showUpload       = appState === 'idle' || appState === 'extracting' || appState === 'error';
+  const showVerification = appState === 'verifying' || appState === 'generating';
 
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'home',        label: 'Analisi',      icon: <Home className="w-5 h-5" /> },
@@ -278,6 +282,7 @@ function AppInner() {
       {sidebarOpen        && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
       {historySidebarOpen && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setHistorySidebarOpen(false)} />}
 
+      {/* Sidebar sinistra */}
       <aside className={`fixed top-0 left-0 h-full z-30 bg-white border-r border-slate-200 shadow-lg flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-52' : 'w-14'} lg:static lg:shadow-none`}>
         <div className="flex items-center justify-between px-3 py-4 border-b border-slate-100 min-h-[64px]">
           {sidebarOpen && (
@@ -323,6 +328,7 @@ function AppInner() {
         )}
       </aside>
 
+      {/* Contenuto principale */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="bg-white border-b border-slate-200 shadow-sm">
           <div className="px-4 sm:px-6 py-4 flex items-center justify-between">
@@ -417,9 +423,17 @@ function AppInner() {
                   </div>
                 </div>
               )}
+
               {showVerification && extractedData && (
-                <DataVerification files={files} extractedData={extractedData} onApprove={handleApprove} />
+                <DataVerification
+                  files={files}
+                  extractedData={extractedData}
+                  onApprove={handleApprove}
+                  readOnly={isReadOnly}
+                  onRegenerateNarrative={isReadOnly ? handleRegenerateNarrative : undefined}
+                />
               )}
+
               {appState === 'generating' && (
                 <div className="fixed inset-0 bg-white/70 flex items-center justify-center z-50">
                   <div className="flex items-center space-x-3 text-blue-600 bg-white border border-slate-200 rounded-xl px-6 py-4 shadow-lg">
@@ -431,14 +445,21 @@ function AppInner() {
                   </div>
                 </div>
               )}
+
               {appState === 'done' && extractedData && narrativeData && (
-                <ReportViewer extractedData={extractedData} narrativeData={narrativeData} sourceFiles={files} />
+                <ReportViewer
+                  extractedData={extractedData}
+                  narrativeData={narrativeData}
+                  sourceFiles={files}
+                  onDocxDownloaded={handleDocxDownloaded}
+                />
               )}
             </>
           )}
         </main>
       </div>
 
+      {/* Sidebar storico destra */}
       <aside
         className={`fixed top-0 right-0 h-full z-30 bg-white border-l border-slate-200 shadow-xl flex flex-col transition-all duration-300 overflow-hidden ${
           historySidebarOpen ? 'w-80' : 'w-0'
@@ -462,6 +483,38 @@ function AppInner() {
           </>
         )}
       </aside>
+
+      {/* Modale warning rigenerazione narrativa */}
+      {showRegenWarning && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-6 h-6 text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-base font-bold text-slate-900 mb-1">Documento già scaricato</h3>
+                <p className="text-sm text-slate-600">
+                  Hai già scaricato il documento Word per questa analisi. Rigenerando la narrativa,
+                  il report precedente verrà sostituito. Il file già scaricato rimarrà sul tuo computer.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowRegenWarning(false); pendingRegenData.current = null; }}
+                className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={confirmRegen}
+                className="px-4 py-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+              >
+                Rigenera comunque
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
