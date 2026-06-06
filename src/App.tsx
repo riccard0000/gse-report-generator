@@ -233,21 +233,9 @@ function AppInner() {
       return;
     }
 
-    if (record.step === 'reported' && record.narrativeData) {
-      setExtractedData(dataToLoad);
-      setNarrativeData(record.narrativeData);
-      setIsReadOnly(true);
-      setAppState('done');
-      setProgress('');
-      return;
-    }
-
-    if (record.step === 'confirmed') {
-      setIsReadOnly(true);
-    } else {
-      setIsReadOnly(false);
-    }
-
+    // ── Download PDF prima di qualsiasi early return ──────────────────────────
+    // Necessario anche per i record 'reported': sourceFiles serve al ReportViewer
+    // per la visualizzazione PDF e al DataVerification per l'evidenziazione.
     const fileKeys: string[] = (record as unknown as { fileKeys?: string[] }).fileKeys ?? [];
     if (fileKeys.length > 0 && !meta.isDemoMode) {
       setProgress('Ripristino PDF dallo storico...');
@@ -262,8 +250,24 @@ function AppInner() {
       } catch {
         setFiles([]);
       }
-    } else {
+    } else if (!meta.isDemoMode) {
       setFiles([]);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    if (record.step === 'reported' && record.narrativeData) {
+      setExtractedData(dataToLoad);
+      setNarrativeData(record.narrativeData);
+      setIsReadOnly(true);
+      setAppState('done');
+      setProgress('');
+      return;
+    }
+
+    if (record.step === 'confirmed') {
+      setIsReadOnly(true);
+    } else {
+      setIsReadOnly(false);
     }
 
     setExtractedData(dataToLoad);
