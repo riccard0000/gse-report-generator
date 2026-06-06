@@ -9,7 +9,7 @@ import { ExtractionHistory } from './components/ExtractionHistory';
 import { ExtractedData, NarrativeData, ExtractionMeta, ExtractionRecord } from './types';
 import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DATA } from './mockData';
 import { ModelConfigProvider, useModelConfig } from './context/ModelConfigContext';
-import { saveExtractionStep1, saveExtractionStep2 } from './lib/extractionStorage';
+import { saveExtractionStep1, saveExtractionStep2, downloadPdf } from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
   Home, ChevronLeft, ChevronRight, Menu, Stethoscope, History,
@@ -34,7 +34,8 @@ function AppInner() {
   const [sidebarOpen,    setSidebarOpen]    = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
-  // id KV del record corrente — usato per lo step 2 (conferma)
+  // Conserva la Promise di Step 1 per evitare la race condition in handleApprove
+  const step1Promise = useRef<Promise<string | null>>(Promise.resolve(null));
   const currentHistoryId = useRef<string | null>(null);
 
   const navigate = (p: Page) => { setPage(p); setSidebarOpen(false); };
@@ -55,10 +56,9 @@ function AppInner() {
       );
       setExtractedData(extracted);
       setAppState('verifying');
-      // ── STEP 1: salva dati AI grezzi su KV HISTORY (fire-and-forget)
-      saveExtractionStep1(extracted, false).then(id => {
-        currentHistoryId.current = id;
-      });
+      // Conserva la Promise (non solo il risultato) per risolvere la race condition
+      step1Promise.current = saveExtractionStep1(extracted, false, files);
+      step1Promise.current.then(id => { currentHistoryId.current = id; });
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante l\'estrazione');
       setAppState('error');
@@ -85,10 +85,9 @@ function AppInner() {
       setExtractedData(MOCK_EXTRACTED_DATA);
       setAppState('verifying');
       setProgress('');
-      // ── STEP 1 per modalità demo
-      saveExtractionStep1(MOCK_EXTRACTED_DATA, true).then(id => {
-        currentHistoryId.current = id;
-      });
+      // Demo: nessun upload R2, solo record KV
+      step1Promise.current = saveExtractionStep1(MOCK_EXTRACTED_DATA, true);
+      step1Promise.current.then(id => { currentHistoryId.current = id; });
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore nel caricamento dei PDF demo');
       setAppState('error');
@@ -105,6 +104,7 @@ function AppInner() {
     setProgress('');
     setIsDemoMode(false);
     currentHistoryId.current = null;
+    step1Promise.current = Promise.resolve(null);
   };
 
   const handleApprove = useCallback(async (finalData: ExtractedData) => {
@@ -112,9 +112,13 @@ function AppInner() {
       setAppState('generating');
       setProgress('Generazione del report in corso...');
 
-      // ── STEP 2: salva dati confermati su KV HISTORY (fire-and-forget)
-      if (currentHistoryId.current) {
-        saveExtractionStep2(currentHistoryId.current, finalData, isDemoMode);
+      // Attende Step 1 se ancora in corso (fix race condition)
+      const historyId = await step1Promise.current;
+      const resolvedId = historyId ?? currentHistoryId.current;
+
+      // Step 2: salva dati confermati
+      if (resolvedId) {
+        saveExtractionStep2(resolvedId, finalData, isDemoMode);
       }
 
       let narrative: NarrativeData;
@@ -149,8 +153,8 @@ function AppInner() {
     setAppState('extracting');
     setPage('home');
     currentHistoryId.current = record.id;
+    step1Promise.current = Promise.resolve(record.id);
 
-    // Usa confirmedData se disponibile, altrimenti extractedData
     const dataToLoad = record.confirmedData ?? record.extractedData;
     if (!dataToLoad) {
       setError('Record storico vuoto.');
@@ -158,22 +162,19 @@ function AppInner() {
       return;
     }
 
-    // Tenta di ricaricare i PDF
-    const fileNames = (dataToLoad.yearsData ?? []).map(y => y.sourceFileName).filter(Boolean) as string[];
-    if (fileNames.length > 0) {
+    // Ricarica PDF da R2 se disponibili, altrimenti lascia files vuoto
+    const fileKeys: string[] = (record as unknown as { fileKeys?: string[] }).fileKeys ?? [];
+    if (fileKeys.length > 0 && !meta.isDemoMode) {
+      setProgress('Ripristino PDF dallo storico...');
       try {
-        const rawBase = (import.meta.env.BASE_URL ?? '/') as string;
-        const base    = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
-        const loaded  = await Promise.all(
-          fileNames.map(async name => {
-            const url  = `${base}${encodeURIComponent(name)}`;
-            const res  = await fetch(url);
-            if (!res.ok) throw new Error(`PDF non trovato: ${url}`);
-            const blob = await res.blob();
-            return new File([blob], name, { type: 'application/pdf' });
+        const loaded = await Promise.all(
+          fileKeys.map(async key => {
+            const fileName = decodeURIComponent(key.split('/').pop() ?? 'documento.pdf');
+            return downloadPdf(key, fileName);
           })
         );
-        setFiles(loaded);
+        const validFiles = loaded.filter((f): f is File => f !== null);
+        setFiles(validFiles);
       } catch {
         setFiles([]);
       }

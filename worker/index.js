@@ -11,6 +11,9 @@
  *   POST /history     — crea/aggiorna record storico
  *   GET  /history     — lista metadata ExtractionMeta[]
  *   GET  /history/:id — record completo ExtractionRecord
+ *   PUT  /files/:key  — upload PDF su R2
+ *   GET  /files/:key  — download PDF da R2
+ *   DELETE /files/:key — elimina PDF da R2
  *   OPTIONS *         — preflight CORS
  *
  * KV NAMESPACE BINDING: GSE_CONFIG (unico namespace)
@@ -18,6 +21,9 @@
  *   gse_prompt        → prompt custom estrazione + narrativa
  *   history_index     → array metadati storico
  *   history:<ts>:<cf> → record completo singola estrazione
+ *
+ * R2 BUCKET BINDING: GSE_FILES
+ *   files/<historyId>/<filename> → PDF bilanci caricati dall'utente
  */
 
 const ALLOWED_ORIGINS = [
@@ -53,7 +59,7 @@ function getCorsHeaders(origin) {
   if (ALLOWED_ORIGINS.includes(origin)) {
     return {
       'Access-Control-Allow-Origin':  origin,
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age':       '86400',
     };
@@ -78,6 +84,7 @@ function metaFromRecord(record) {
     vatNumber:   ed?.vatNumber?.value   ?? '',
     years:       (ed?.yearsData ?? []).map(y => y.year),
     isDemoMode:  record.isDemoMode ?? false,
+    fileKeys:    record.fileKeys   ?? [],
   };
 }
 
@@ -93,12 +100,61 @@ export default {
     const origin      = request.headers.get('Origin') ?? '';
     const corsHeaders = getCorsHeaders(origin);
     const kv          = env.GSE_CONFIG;
+    const r2          = env.GSE_FILES;
 
     if (!corsHeaders) return new Response('Forbidden', { status: 403 });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
 
     const url      = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
+
+    // ── PUT /files/:key  — upload PDF su R2 ────────────────────────────────
+    if (request.method === 'PUT' && pathname.startsWith('/files/')) {
+      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      const key = decodeURIComponent(pathname.slice(7));
+      if (!key) return jsonResponse({ error: 'Key mancante.' }, 400, corsHeaders);
+      try {
+        await r2.put(key, request.body, {
+          httpMetadata: { contentType: 'application/pdf' },
+        });
+        return jsonResponse({ ok: true, key }, 200, corsHeaders);
+      } catch (e) {
+        return jsonResponse({ error: String(e) }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /files/:key  — download PDF da R2 ──────────────────────────────
+    if (request.method === 'GET' && pathname.startsWith('/files/')) {
+      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      const key = decodeURIComponent(pathname.slice(7));
+      try {
+        const object = await r2.get(key);
+        if (!object) return new Response('Not found', { status: 404, headers: corsHeaders });
+        return new Response(object.body, {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            'Content-Type':        'application/pdf',
+            'Content-Disposition': `inline; filename="${key.split('/').pop()}"`,
+            'Cache-Control':       'private, max-age=3600',
+          },
+        });
+      } catch (e) {
+        return jsonResponse({ error: String(e) }, 500, corsHeaders);
+      }
+    }
+
+    // ── DELETE /files/:key  — elimina PDF da R2 ────────────────────────────
+    if (request.method === 'DELETE' && pathname.startsWith('/files/')) {
+      if (!r2) return jsonResponse({ error: 'R2 GSE_FILES non configurato.' }, 500, corsHeaders);
+      const key = decodeURIComponent(pathname.slice(7));
+      try {
+        await r2.delete(key);
+        return jsonResponse({ ok: true }, 200, corsHeaders);
+      } catch (e) {
+        return jsonResponse({ error: String(e) }, 500, corsHeaders);
+      }
+    }
 
     // ── GET /config ── legge modelli, auto-init se vuoto ───────────────────────
     if (request.method === 'GET' && pathname === '/config') {
@@ -192,7 +248,7 @@ export default {
       const body = await parseBody(request);
       if (body === null) return jsonResponse({ error: 'Body JSON non valido o vuoto.' }, 400, corsHeaders);
 
-      const { id: existingId, step, extractedData, confirmedData, isDemoMode } = body;
+      const { id: existingId, step, extractedData, confirmedData, isDemoMode, fileKeys } = body;
       if (!step || !['extracted', 'confirmed'].includes(step)) {
         return jsonResponse({ error: 'Campo step invalido (usa extracted|confirmed).' }, 400, corsHeaders);
       }
@@ -203,7 +259,15 @@ export default {
           const timestamp = Date.now();
           const vatNumber = extractedData.vatNumber?.value ?? 'unknown';
           const id        = `history:${timestamp}:${vatNumber}`;
-          const record    = { id, timestamp, step: 'extracted', isDemoMode: isDemoMode ?? false, extractedData, confirmedData: null };
+          const record    = {
+            id,
+            timestamp,
+            step: 'extracted',
+            isDemoMode: isDemoMode ?? false,
+            extractedData,
+            confirmedData: null,
+            fileKeys: fileKeys ?? [],
+          };
           await kv.put(id, JSON.stringify(record));
           await updateIndex(kv, record);
           return jsonResponse({ ok: true, id }, 200, corsHeaders);
@@ -215,10 +279,11 @@ export default {
           if (raw) {
             rec = JSON.parse(raw);
           } else {
-            rec = { id: existingId, timestamp: Date.now(), step: 'extracted', isDemoMode: isDemoMode ?? false, extractedData: null, confirmedData: null };
+            rec = { id: existingId, timestamp: Date.now(), step: 'extracted', isDemoMode: isDemoMode ?? false, extractedData: null, confirmedData: null, fileKeys: [] };
           }
           rec.step          = 'confirmed';
           rec.confirmedData = confirmedData;
+          if (fileKeys && fileKeys.length > 0) rec.fileKeys = fileKeys;
           await kv.put(rec.id, JSON.stringify(rec));
           await updateIndex(kv, rec);
           return jsonResponse({ ok: true, id: rec.id }, 200, corsHeaders);

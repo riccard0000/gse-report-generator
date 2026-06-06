@@ -4,8 +4,9 @@
  *
  * Flusso in 2 step:
  *   Step 1 — dopo l'estrazione AI:
- *     saveExtractionStep1(extractedData, isDemoMode)
- *     → POST /history  { step: 'extracted', extractedData, isDemoMode }
+ *     saveExtractionStep1(extractedData, isDemoMode, files)
+ *     → upload PDF su R2 (PUT /files/<key>)
+ *     → POST /history  { step: 'extracted', extractedData, isDemoMode, fileKeys }
  *     → ritorna l'id del record creato (da conservare in stato React)
  *
  *   Step 2 — dopo la conferma dati dall'utente:
@@ -16,19 +17,58 @@
  * Lettura:
  *   listHistory()          → GET /history          → ExtractionMeta[]
  *   getHistoryRecord(id)   → GET /history/:id       → ExtractionRecord
+ *   downloadPdf(key)       → GET /files/:key        → File PDF
  */
 
 import { ExtractedData, ExtractionMeta, ExtractionRecord } from '../types';
 
-const WORKER_URL = (import.meta.env.VITE_WORKER_URL as string | undefined)
+export const WORKER_URL = (import.meta.env.VITE_WORKER_URL as string | undefined)
   ?? 'https://gse-report-worker.riccardocoppola00.workers.dev';
 
-// ── Step 1: salva estrazione AI grezza ───────────────────────────────────────
+// ── Upload singolo PDF su R2 ─────────────────────────────────────────────────
+export async function uploadPdf(
+  historyId: string,
+  file: File,
+): Promise<string | null> {
+  // Chiave R2: "files/<historyId_sanitizzato>/<filename>"
+  const safeId  = historyId.replace(/[^a-zA-Z0-9_:-]/g, '_');
+  const key     = `files/${safeId}/${encodeURIComponent(file.name)}`;
+  try {
+    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/pdf' },
+      body: file,
+    });
+    if (!res.ok) return null;
+    return key;
+  } catch {
+    return null;
+  }
+}
+
+// ── Download PDF da R2 come File ─────────────────────────────────────────────
+export async function downloadPdf(
+  key: string,
+  fileName: string,
+): Promise<File | null> {
+  try {
+    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return new File([blob], fileName, { type: 'application/pdf' });
+  } catch {
+    return null;
+  }
+}
+
+// ── Step 1: salva estrazione AI grezza + upload PDF ──────────────────────────
 export async function saveExtractionStep1(
   extractedData: ExtractedData,
   isDemoMode: boolean,
+  files?: File[],
 ): Promise<string | null> {
   try {
+    // 1a. Crea il record KV per ottenere l'id
     const res = await fetch(`${WORKER_URL}/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -36,7 +76,24 @@ export async function saveExtractionStep1(
     });
     if (!res.ok) return null;
     const json = await res.json() as { ok: boolean; id?: string };
-    return json.id ?? null;
+    const id   = json.id ?? null;
+    if (!id) return null;
+
+    // 1b. Upload PDF in parallelo (fire-and-forget per non bloccare la UI)
+    if (files && files.length > 0 && !isDemoMode) {
+      Promise.all(files.map(f => uploadPdf(id, f))).then(async keys => {
+        const fileKeys = keys.filter((k): k is string => k !== null);
+        if (fileKeys.length === 0) return;
+        // Aggiorna il record con le chiavi R2
+        await fetch(`${WORKER_URL}/history`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, step: 'confirmed', confirmedData: extractedData, isDemoMode, fileKeys }),
+        });
+      }).catch(() => { /* fallback silenzioso */ });
+    }
+
+    return id;
   } catch {
     return null;
   }

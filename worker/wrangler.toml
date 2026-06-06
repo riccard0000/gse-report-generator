@@ -12,5 +12,11 @@ compatibility_date = "2024-01-01"
 binding = "GSE_CONFIG"
 id      = "20b46f062f9545e5b89c9447962c1f1d"
 
+# ── R2 Bucket — PDF bilanci ────────────────────────────────────────────────────
+# Crea il bucket con: wrangler r2 bucket create gse-files
+[[r2_buckets]]
+binding     = "GSE_FILES"
+bucket_name = "gse-files"
+
 # ── Secret (non va nel toml) ──────────────────────────────────────────────────
 # wrangler secret put OPENROUTER_API_KEY
