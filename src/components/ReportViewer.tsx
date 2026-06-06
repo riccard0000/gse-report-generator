@@ -7,6 +7,8 @@ interface Props {
   extractedData: ExtractedData;
   narrativeData: NarrativeData;
   sourceFiles: File[];
+  /** Chiamata dopo il primo download del .doc — abilita il warning di rigenerazione */
+  onDocxDownloaded?: () => void;
 }
 
 const fmt = (v: number | null | undefined): string => {
@@ -396,7 +398,7 @@ ${checkRow('Contenziosi / ricorsi al TAR contro GSE', checklist.contenziosi)}
 </html>`;
 };
 
-export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) => {
+export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData, onDocxDownloaded }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const htmlContent = buildHtml(extractedData, narrativeData);
   const company = String(extractedData.companyName?.value ?? 'report').replace(/[^a-zA-Z0-9]/g, '_');
@@ -407,6 +409,7 @@ export const ReportViewer: React.FC<Props> = ({ extractedData, narrativeData }) 
     const a    = document.createElement('a');
     a.href = url; a.download = `GSE_Report_${company}.doc`; a.click();
     URL.revokeObjectURL(url);
+    onDocxDownloaded?.();
   };
 
   const handleDownloadHtml = () => {
