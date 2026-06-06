@@ -327,6 +327,16 @@ export const extractDataFromPdfs = async (
   }
 
   if (parsedResults.length === 0) throw new Error(`Nessuna estrazione riuscita.\n${errors.join('\n')}`);
+
+  // Avviso esplicito se il numero di risultati è inferiore ai PDF caricati
+  if (parsedResults.length < files.length) {
+    const mancanti = files.length - parsedResults.length;
+    onProgress?.(
+      `⚠️ Attenzione: ${mancanti} su ${files.length} bilanci non sono stati elaborati correttamente. ` +
+      `Il report potrebbe essere incompleto (tab mancanti). Riprova il caricamento.`
+    );
+  }
+
   if (errors.length > 0) onProgress?.(`⚠️ ${errors.length} PDF parzialmente non estratti.`);
   onProgress?.('Merge dati estratti...');
   return mergeExtractedData(parsedResults);
