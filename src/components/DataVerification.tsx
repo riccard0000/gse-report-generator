@@ -4,7 +4,7 @@ import { TextLayer } from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
 import { computeDerivedFields } from '../kpiCalculator';
 import { BALANCE_SCHEMA, BalanceFieldKey, getSearchLabels } from '../balanceSchema';
-import { CheckCircle, ChevronRight, FileSearch, Layers } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ChevronRight, FileSearch, Layers } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
@@ -117,8 +117,6 @@ function normalizeNumStr(s: string): string {
   return s.replace(/[.,\s-]/g, '');
 }
 
-// Restituisce true se la stringa è composta solo da cifre, separatori numerici
-// italiani (punto migliaia, virgola decimale) e segno meno — nessuna lettera.
 function isPureNumeric(s: string): boolean {
   return /^-?[\d.,\s]+[-]?$/.test(s.trim());
 }
@@ -132,11 +130,6 @@ interface PdfTextItem {
 
 // ---------------------------------------------------------------------------
 // buildMergedTokens
-// FIX Bug singola-riga: i token puramente numerici NON vengono fusi tra loro
-// con gap > 2px. Questo mantiene separate le celle numeriche di una tabella
-// (Consist.iniziale, Consist.finale, Variaz.assoluta, Variaz.%) che nei PDF
-// bilancio sono spaziate di qualche px ma non 8px.
-// I token misti testo+numero continuano a fondersi con gap <= 8px.
 // ---------------------------------------------------------------------------
 function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
   if (items.length === 0) return [];
@@ -158,9 +151,6 @@ function buildMergedTokens(items: PdfTextItem[]): PdfTextItem[] {
       const next = sorted[j];
       const gap  = next.transform[4] - fusedX1;
       if (Math.abs(next.transform[5] - curY) > 3) break;
-      // Se ENTRAMBI i token (quello accumulato e il prossimo) sono
-      // puramente numerici, usiamo una soglia di fusione molto stretta (2px)
-      // per non unire celle di colonne diverse nella stessa tabella.
       const bothNumeric = isPureNumeric(fusedStr) && isPureNumeric(next.str);
       const maxGap = bothNumeric ? 2 : 8;
       if (gap > maxGap) break;
@@ -217,12 +207,6 @@ function buildRowTokens(items: PdfTextItem[]): PdfTextItem[] {
 
 // ---------------------------------------------------------------------------
 // findNumericNeighbor
-// FIX Bug singola-riga: tra più match esatti (distanza 0) sceglie quello con
-// X più vicina all'etichetta (prima colonna numerica a destra dell'etichetta),
-// non quello con valore numerico più simile (che poteva essere una colonna
-// lontana con lo stesso numero).
-// Threshold best-fit abbassato a 1% per ridurre falsi match su righe con
-// molti valori simili.
 // ---------------------------------------------------------------------------
 function findNumericNeighbor(
   items: PdfTextItem[],
@@ -234,7 +218,6 @@ function findNumericNeighbor(
   const Y_TOL   = 8;
   const mergedItems = buildMergedTokens(items);
 
-  // Token sulla stessa riga, a destra dell'etichetta, ordinati per X crescente
   const sameRow = mergedItems
     .filter(it => {
       const tf = it.transform;
@@ -251,10 +234,8 @@ function findNumericNeighbor(
     const absVal       = Math.abs(fieldValue);
     const targetDigits = normalizeNumStr(String(Math.round(absVal)));
 
-    // Raccoglie TUTTI i match esatti (distanza normalizzata = 0)
     const exactMatches = pool.filter(it => normalizeNumStr(it.str) === targetDigits);
     if (exactMatches.length > 0) {
-      // Tra i match esatti, prende quello con X più piccola (più vicino all'etichetta)
       const best = exactMatches.reduce((a, b) =>
         a.transform[4] < b.transform[4] ? a : b
       );
@@ -265,8 +246,6 @@ function findNumericNeighbor(
       };
     }
 
-    // Nessun match esatto: cerca il candidato con valore parsed più vicino,
-    // con soglia di tolleranza all'1% (era 5%) per evitare falsi positivi.
     let bestDist = Infinity;
     let bestItem: PdfTextItem | null = null;
     for (const it of pool) {
@@ -277,7 +256,6 @@ function findNumericNeighbor(
         if (dist < bestDist) { bestDist = dist; bestItem = it; }
       }
     }
-    // Soglia: max 1% di scarto oppure 1€ assoluto (per valori piccoli)
     const threshold = Math.max(1, absVal * 0.01);
     if (bestItem && bestDist <= threshold) {
       const tf = bestItem.transform;
@@ -289,7 +267,6 @@ function findNumericNeighbor(
     return { numBbox: null, numericDistance: Infinity };
   }
 
-  // fieldValue non disponibile: prende il token numerico più a sinistra
   const closest = pool[0];
   const tf = closest.transform;
   return {
@@ -398,7 +375,7 @@ function findAllMatchesForPrefix(
 }
 
 // ---------------------------------------------------------------------------
-// findBboxForField — SCHEMA-FIRST + supporto MULTI-RIGA
+// findBboxForField
 // ---------------------------------------------------------------------------
 async function findBboxForField(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -415,16 +392,13 @@ async function findBboxForField(
     const rawLabel = (field.rawLabel ?? '').trim();
     const rawText  = (field.rawText  ?? '').trim();
 
-    // ── PERCORSO MULTI-RIGA ─────────────────────────────────────────────────
     if (rawText.includes('\n')) {
       const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
       const allBboxes: BBox[] = [];
 
       for (const line of lines) {
-        // Etichetta = tutto prima del primo tab; valore = parte dopo il tab
         const parts      = line.split('\t');
         const labelPart  = parts[0].trim();
-        // Tenta di estrarre il valore numerico della riga dal rawText stesso
         const lineValue  = parts.length > 1 ? parseIT(parts[1].trim()) : null;
         const lineValArg = (lineValue !== null && !isNaN(lineValue) && lineValue !== 0)
           ? lineValue : null;
@@ -452,7 +426,6 @@ async function findBboxForField(
       return null;
     }
 
-    // ── PERCORSO SINGOLA RIGA ────────────────────────────────────────────────
     const schemaLabels = fieldKey ? getSearchLabels(fieldKey) : [];
     const aiLabel      = rawLabel;
     const allLabels    = aiLabel && !schemaLabels.includes(aiLabel)
@@ -879,6 +852,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
+  // Mostra l'errore solo dopo che l'utente ha tentato di confermare
+  const [showGseError, setShowGseError]       = useState(false);
+
+  // Il valore GSE è valido se è un numero (incluso 0)
+  const gseResidualValid = data.gseResidual?.value !== null && data.gseResidual?.value !== undefined;
 
   const pdfFileIndex = activeTab === 0 ? null : activeTab - 1;
   const pdfFile      = pdfFileIndex !== null ? files[pdfFileIndex] ?? null : null;
@@ -937,15 +915,28 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
     });
   };
 
+  const handleConfirm = () => {
+    if (!gseResidualValid) {
+      setShowGseError(true);
+      setActiveTab(0); // porta l'utente sul tab GSE
+      return;
+    }
+    onApprove(data);
+  };
+
   const tabLabels = ['Importo GSE', ...data.yearsData.map(y => `Bilancio ${y.year || (data.yearsData.indexOf(y) + 1)}`)];
   const tabColors = [
-    'border-purple-500 text-purple-700 bg-purple-50',
+    gseResidualValid
+      ? 'border-purple-500 text-purple-700 bg-purple-50'
+      : 'border-red-500 text-red-700 bg-red-50',
     'border-blue-500 text-blue-700 bg-blue-50',
     'border-emerald-500 text-emerald-700 bg-emerald-50',
     'border-amber-500 text-amber-700 bg-amber-50',
   ];
   const tabColorsInactive = [
-    'text-slate-500 hover:text-purple-600 hover:bg-purple-50',
+    gseResidualValid
+      ? 'text-slate-500 hover:text-purple-600 hover:bg-purple-50'
+      : 'text-red-400 hover:text-red-600 hover:bg-red-50',
     'text-slate-500 hover:text-blue-600 hover:bg-blue-50',
     'text-slate-500 hover:text-emerald-600 hover:bg-emerald-50',
     'text-slate-500 hover:text-amber-600 hover:bg-amber-50',
@@ -964,6 +955,10 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
               className={`flex-1 py-3 px-2 text-xs font-semibold border-b-2 transition-colors ${
                 activeTab === i ? tabColors[i] : 'border-transparent ' + tabColorsInactive[i]}`}>
               {lbl}
+              {/* pallino rosso sul tab GSE se il valore manca */}
+              {i === 0 && !gseResidualValid && (
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 ml-1 align-middle" />
+              )}
             </button>
           ))}
         </div>
@@ -975,18 +970,43 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 Inserisci l&apos;importo residuo da restituire al GSE per l&apos;assolvimento dell&apos;obbligo
                 extraprofitti derivante dalla vendita dell&apos;energia elettrica (art. 15-bis D.L. 4/2022).
               </p>
+
+              {/* Banner errore — visibile solo dopo tentativo di conferma */}
+              {showGseError && !gseResidualValid && (
+                <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
+                  <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-semibold text-red-700">Campo obbligatorio</p>
+                    <p className="text-xs text-red-600 mt-0.5">
+                      Inserisci l&apos;importo residuo GSE per proseguire. Usa&nbsp;<strong>0</strong>&nbsp;se l&apos;importo è zero.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Ammontare residuo GSE (&euro;)</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">&euro;</span>
                 <NumericInput
                   value={data.gseResidual?.value}
-                  className="w-full pl-8 pr-3 py-3 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition"
-                  onChange={n => setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }))}
+                  className={`w-full pl-8 pr-3 py-3 border rounded-lg text-sm font-medium focus:outline-none focus:ring-2 transition ${
+                    showGseError && !gseResidualValid
+                      ? 'border-red-400 ring-1 ring-red-300 bg-red-50 focus:ring-red-400'
+                      : 'border-slate-300 focus:ring-purple-400 focus:border-transparent'
+                  }`}
+                  onChange={n => {
+                    setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }));
+                    if (n !== null) setShowGseError(false);
+                  }}
                 />
               </div>
               {data.gseResidual?.rawText && (
                 <p className="mt-2 text-xs text-slate-400 italic">Testo estratto: &ldquo;{data.gseResidual.rawText}&rdquo;</p>
               )}
+              <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">
+                <strong>Nota:</strong> se il documento GSE non era allegato o l&apos;importo non è stato trovato automaticamente,
+                inserisci il valore manualmente. Usa <strong>0</strong> se il debito è già estinto.
+              </p>
             </div>
           )}
 
@@ -1141,9 +1161,24 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           })()}
         </div>
 
+        {/* ---- Footer con bottone conferma ---- */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
-          <button onClick={() => onApprove(data)}
-            className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold rounded-xl transition-colors shadow-sm">
+          {/* Avviso statico sotto il bottone quando il campo è mancante */}
+          {!gseResidualValid && (
+            <p className="text-[11px] text-amber-600 text-center mb-2 flex items-center justify-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Importo GSE obbligatorio — vai al tab &ldquo;Importo GSE&rdquo;
+            </p>
+          )}
+          <button
+            onClick={handleConfirm}
+            disabled={!gseResidualValid}
+            className={`w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm ${
+              gseResidualValid
+                ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'
+                : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+            }`}
+          >
             <CheckCircle className="w-5 h-5" />
             Conferma dati e genera report
           </button>
