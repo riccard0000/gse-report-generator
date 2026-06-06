@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { FileUploader } from './components/FileUploader';
 import { ReportViewer } from './components/ReportViewer';
-import { extractDataFromPdfs, generateNarrative } from './aiService';
+import { extractDataFromPdfs, reprocessSinglePdf, generateNarrative } from './aiService';
 import { DataVerification } from './components/DataVerification';
 import { Settings } from './components/Settings';
 import { BrowserDiagnosticsPanel } from './components/BrowserDiagnosticsPanel';
@@ -20,6 +20,73 @@ type Page = 'home' | 'settings' | 'diagnostics';
 
 const REQUIRED_FILES = 3;
 
+/**
+ * Ricava l'anno (4 cifre) dal nome di un file PDF.
+ * Es: "OUT_LASTBIL_IC01637000892-2024-GEOSOL.pdf" → "2024"
+ */
+const guessYearFromFileName = (fileName: string): string | null => {
+  const match = fileName.match(/(20\d{2})/);
+  return match ? match[1] : null;
+};
+
+/**
+ * Dopo l'estrazione principale, verifica se mancano anni attesi (uno per ogni PDF).
+ * Per ogni anno mancante riprocessa automaticamente il PDF corrispondente
+ * e inietta il risultato in extractedData.
+ */
+const detectAndReprocessMissingYears = async (
+  extracted: ExtractedData,
+  files: File[],
+  getPromptCustom: () => string,
+  onProgress: (msg: string) => void
+): Promise<ExtractedData> => {
+  const extractedYears = new Set((extracted.yearsData ?? []).map((y) => y.year));
+
+  const missingFiles: File[] = files.filter((f) => {
+    const year = guessYearFromFileName(f.name);
+    return year !== null && !extractedYears.has(year);
+  });
+
+  if (missingFiles.length === 0) return extracted;
+
+  const missingYears = missingFiles
+    .map((f) => guessYearFromFileName(f.name))
+    .filter(Boolean)
+    .join(', ');
+
+  onProgress(`⚠️ Anno/i mancante/i: ${missingYears}. Riprocesso automatico in corso...`);
+
+  let result = extracted;
+  for (const file of missingFiles) {
+    const year = guessYearFromFileName(file.name)!;
+    onProgress(`🔄 Riprocesso anno ${year}: ${file.name}...`);
+    try {
+      const retry = await reprocessSinglePdf(file, getPromptCustom, (msg) =>
+        onProgress(`  [Retry ${year}] ${msg}`)
+      );
+      const newYears = (retry.yearsData ?? []).filter(
+        (y) => !result.yearsData.some((existing) => existing.year === y.year)
+      );
+      if (newYears.length > 0) {
+        result = {
+          ...result,
+          yearsData: [...result.yearsData, ...newYears].sort(
+            (a, b) => Number(b.year) - Number(a.year)
+          ),
+        };
+        onProgress(`✅ Anno ${year} recuperato con successo.`);
+      } else {
+        onProgress(`⚠️ Anno ${year}: riprocessato ma nessun dato nuovo trovato.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onProgress(`❌ Anno ${year}: riprocesso fallito — ${msg}`);
+    }
+  }
+
+  return result;
+};
+
 function AppInner() {
   const { promptCustom } = useModelConfig();
 
@@ -34,7 +101,6 @@ function AppInner() {
   const [sidebarOpen,    setSidebarOpen]    = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
-  // Conserva la Promise di Step 1 per evitare la race condition in handleApprove
   const step1Promise = useRef<Promise<string | null>>(Promise.resolve(null));
   const currentHistoryId = useRef<string | null>(null);
 
@@ -49,15 +115,24 @@ function AppInner() {
     setNarrativeData(null);
     currentHistoryId.current = null;
     try {
+      // Step 1: estrazione principale
       const extracted = await extractDataFromPdfs(
         files,
         () => promptCustom.extraction,
         setProgress
       );
-      setExtractedData(extracted);
+
+      // Step 2: rileva e riprocessa automaticamente gli anni mancanti
+      const complete = await detectAndReprocessMissingYears(
+        extracted,
+        files,
+        () => promptCustom.extraction,
+        setProgress
+      );
+
+      setExtractedData(complete);
       setAppState('verifying');
-      // Conserva la Promise (non solo il risultato) per risolvere la race condition
-      step1Promise.current = saveExtractionStep1(extracted, false, files);
+      step1Promise.current = saveExtractionStep1(complete, false, files);
       step1Promise.current.then(id => { currentHistoryId.current = id; });
     } catch (e: unknown) {
       setError((e as Error).message || 'Errore durante l\'estrazione');
@@ -85,7 +160,6 @@ function AppInner() {
       setExtractedData(MOCK_EXTRACTED_DATA);
       setAppState('verifying');
       setProgress('');
-      // Demo: nessun upload R2, solo record KV
       step1Promise.current = saveExtractionStep1(MOCK_EXTRACTED_DATA, true);
       step1Promise.current.then(id => { currentHistoryId.current = id; });
     } catch (e: unknown) {
@@ -112,11 +186,9 @@ function AppInner() {
       setAppState('generating');
       setProgress('Generazione del report in corso...');
 
-      // Attende Step 1 se ancora in corso (fix race condition)
       const historyId = await step1Promise.current;
       const resolvedId = historyId ?? currentHistoryId.current;
 
-      // Step 2: salva dati confermati
       if (resolvedId) {
         saveExtractionStep2(resolvedId, finalData, isDemoMode);
       }
@@ -140,7 +212,6 @@ function AppInner() {
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  // ── Ricarica da storico ──────────────────────────────────────────────────
   const handleLoadFromHistory = useCallback(async (
     record: ExtractionRecord,
     meta: ExtractionMeta,
@@ -162,7 +233,6 @@ function AppInner() {
       return;
     }
 
-    // Ricarica PDF da R2 se disponibili, altrimenti lascia files vuoto
     const fileKeys: string[] = (record as unknown as { fileKeys?: string[] }).fileKeys ?? [];
     if (fileKeys.length > 0 && !meta.isDemoMode) {
       setProgress('Ripristino PDF dallo storico...');
@@ -208,7 +278,6 @@ function AppInner() {
       {sidebarOpen        && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
       {historySidebarOpen && <div className="fixed inset-0 bg-black/30 z-20 lg:hidden" onClick={() => setHistorySidebarOpen(false)} />}
 
-      {/* Sidebar sinistra — navigazione */}
       <aside className={`fixed top-0 left-0 h-full z-30 bg-white border-r border-slate-200 shadow-lg flex flex-col transition-all duration-200 ${sidebarOpen ? 'w-52' : 'w-14'} lg:static lg:shadow-none`}>
         <div className="flex items-center justify-between px-3 py-4 border-b border-slate-100 min-h-[64px]">
           {sidebarOpen && (
@@ -254,7 +323,6 @@ function AppInner() {
         )}
       </aside>
 
-      {/* Area contenuto principale */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="bg-white border-b border-slate-200 shadow-sm">
           <div className="px-4 sm:px-6 py-4 flex items-center justify-between">
@@ -371,7 +439,6 @@ function AppInner() {
         </main>
       </div>
 
-      {/* Sidebar destra — storico estrazioni */}
       <aside
         className={`fixed top-0 right-0 h-full z-30 bg-white border-l border-slate-200 shadow-xl flex flex-col transition-all duration-300 overflow-hidden ${
           historySidebarOpen ? 'w-80' : 'w-0'

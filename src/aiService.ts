@@ -24,12 +24,8 @@ type PdfTextItem = { str: string; transform: number[] };
 const isPdfTextItem = (item: unknown): item is PdfTextItem =>
   typeof item === 'object' && item !== null && 'str' in item && 'transform' in item;
 
-// ─── Limite caratteri per PDF inviato all'AI ─────────────────────────────────
-// OpenInference restituisce 502 "could not decode header" quando il body HTTP
-// supera ~100 KB. Il prompt contrattuale occupa ~8 KB; lasciamo ~80 KB al testo PDF.
 const MAX_PDF_CHARS = 80_000;
 
-// ─── Config modelli dal KV Worker ────────────────────────────────────────
 interface ModelConfig {
   extract:   { primary: string; fallback: string };
   narrative: { primary: string; fallback: string };
@@ -58,7 +54,6 @@ const getModelConfig = async (): Promise<ModelConfig> => {
 
 export const invalidateModelConfigCache = () => { _cachedConfig = null; };
 
-// ─── Parsing strutturale PDF ──────────────────────────────────────────────
 const extractStructuredText = (items: PdfTextItem[]): string => {
   const rows: Record<number, PdfTextItem[]> = {};
   items.forEach((item) => {
@@ -90,15 +85,9 @@ const extractTextFromPdf = async (file: File): Promise<string> => {
   return fullText;
 };
 
-/**
- * Tronca il testo PDF a MAX_PDF_CHARS mantenendo le prime pagine intere.
- * Aggiunge un avviso in coda se troncato, così il modello sa che il documento
- * è parziale e non alucina valori mancanti.
- */
 const truncatePdfText = (text: string, maxChars: number): string => {
   if (text.length <= maxChars) return text;
   const truncated = text.slice(0, maxChars);
-  // Tronca all'ultima riga completa per non spezzare una voce a metà
   const lastNewline = truncated.lastIndexOf('\n');
   const clean = lastNewline > maxChars * 0.8 ? truncated.slice(0, lastNewline) : truncated;
   return clean + '\n\n[DOCUMENTO TRONCATO — le pagine successive non sono state incluse per limiti di contesto]';
@@ -106,11 +95,6 @@ const truncatePdfText = (text: string, maxChars: number): string => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Estrae il contenuto testuale dalla risposta OpenRouter.
- * Gestisce il caso in cui il modello usa il campo `reasoning` invece di `content`
- * (comportamento osservato su openai/gpt-oss-120b:free e modelli con extended thinking).
- */
 const extractContent = (data: {
   choices?: {
     message?: {
@@ -122,19 +106,12 @@ const extractContent = (data: {
 }): string => {
   const msg = data.choices?.[0]?.message;
   if (!msg) return '';
-
-  // Caso normale
   if (msg.content && msg.content.trim() !== '') return msg.content;
-
-  // Fallback 1: campo `reasoning` diretto (alcuni provider free lo usano come output)
   if (msg.reasoning && msg.reasoning.trim() !== '') {
-    // Il reasoning può contenere testo misto; proviamo a estrarre il blocco JSON
     const jsonMatch = msg.reasoning.match(/\{[\s\S]*\}/);
     if (jsonMatch) return jsonMatch[0];
     return msg.reasoning;
   }
-
-  // Fallback 2: reasoning_details[].text
   const rdText = msg.reasoning_details
     ?.map((d) => d.text ?? '')
     .join('')
@@ -144,7 +121,6 @@ const extractContent = (data: {
     if (jsonMatch) return jsonMatch[0];
     return rdText;
   }
-
   return '';
 };
 
@@ -170,11 +146,8 @@ const callModel = async (
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
     const msg = errorData.error?.message ?? 'Errore nella richiesta';
-    // 502 da OpenInference = payload troppo grande o upstream temporaneamente indisponibile
-    // lo trattiamo come retryable così il cascade prova il modello fallback
     const status = response.status;
     const err = new Error(`Errore OpenRouter ${status}: ${msg}`);
-    // Marca l'errore come retryable se 502/503/429
     if (status === 502 || status === 503 || status === 429) {
       (err as Error & { retryable: boolean }).retryable = true;
     }
@@ -278,9 +251,6 @@ const mergeExtractedData = (results: ExtractedData[]): ExtractedData => {
 
 /**
  * Estrae i dati strutturati da tutti i PDF.
- * @param files  — file PDF caricati dall'utente
- * @param getPromptCustom — callback che restituisce la sezione custom del prompt (dal contesto React)
- * @param onProgress — callback per aggiornamenti UI
  */
 export const extractDataFromPdfs = async (
   files: File[],
@@ -327,26 +297,42 @@ export const extractDataFromPdfs = async (
   }
 
   if (parsedResults.length === 0) throw new Error(`Nessuna estrazione riuscita.\n${errors.join('\n')}`);
-
-  // Avviso esplicito se il numero di risultati è inferiore ai PDF caricati
-  if (parsedResults.length < files.length) {
-    const mancanti = files.length - parsedResults.length;
-    onProgress?.(
-      `⚠️ Attenzione: ${mancanti} su ${files.length} bilanci non sono stati elaborati correttamente. ` +
-      `Il report potrebbe essere incompleto (tab mancanti). Riprova il caricamento.`
-    );
-  }
-
   if (errors.length > 0) onProgress?.(`⚠️ ${errors.length} PDF parzialmente non estratti.`);
   onProgress?.('Merge dati estratti...');
   return mergeExtractedData(parsedResults);
 };
 
 /**
+ * Riprocessa un singolo PDF e ritorna i dati estratti.
+ * Usata da App.tsx per recuperare anni mancanti dopo l'estrazione principale.
+ */
+export const reprocessSinglePdf = async (
+  file: File,
+  getPromptCustom: () => string,
+  onProgress?: (msg: string) => void
+): Promise<ExtractedData> => {
+  onProgress?.(`📄 Lettura: ${file.name}`);
+  const rawText = await extractTextFromPdf(file);
+  const text    = truncatePdfText(rawText, MAX_PDF_CHARS);
+  if (rawText.length > MAX_PDF_CHARS) {
+    onProgress?.(`⚠️ ${file.name}: testo troncato a ${MAX_PDF_CHARS.toLocaleString()} caratteri`);
+  }
+  const promptCustom = getPromptCustom();
+  const fullPrompt   = buildExtractionPrompt(promptCustom, file.name);
+  const raw = await callWithCascade(
+    'extract',
+    [
+      { role: 'system', content: 'Sei un analista finanziario. Rispondi solo in JSON valido, senza markdown.' },
+      { role: 'user',   content: `${fullPrompt}\n\n=== DOCUMENTO: ${file.name} ===\n${text}` },
+    ],
+    onProgress
+  );
+  const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  return JSON.parse(cleaned) as ExtractedData;
+};
+
+/**
  * Genera la narrativa tecnica a partire dai dati estratti e verificati.
- * @param data — dati estratti (già validati dall'utente)
- * @param getPromptCustom — callback che restituisce la sezione custom del prompt narrativa
- * @param onProgress — callback per aggiornamenti UI
  */
 export const generateNarrative = async (
   data: ExtractedData,
