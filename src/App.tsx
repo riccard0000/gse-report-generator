@@ -275,8 +275,9 @@ function AppInner() {
   const showUpload       = appState === 'idle' || appState === 'extracting' || appState === 'error';
   const showVerification = appState === 'verifying' || appState === 'generating';
 
-  // Breadcrumb "Verifica dati" cliccabile solo su sessioni fresh/demo (non readOnly)
-  const canGoBackToVerification = appState === 'done' && !isReadOnly && files.length > 0;
+  // Breadcrumb "Verifica dati" cliccabile da appState === 'done',
+  // sia per sessioni fresh (files presenti) sia per record caricati dallo storico (isReadOnly).
+  const canGoBackToVerification = appState === 'done' && (files.length > 0 || isReadOnly);
 
   const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'home',        label: 'Analisi',      icon: <Home className="w-5 h-5" /> },
