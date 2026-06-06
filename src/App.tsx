@@ -11,7 +11,7 @@ import { MOCK_EXTRACTED_DATA, MOCK_FILE_NAMES, getMockPdfUrls, MOCK_NARRATIVE_DA
 import { ModelConfigProvider, useModelConfig } from './context/ModelConfigContext';
 import {
   saveExtractionStep1, saveExtractionStep2, saveExtractionStep3,
-  markDocxDownloaded, downloadPdf,
+  markDocxDownloaded, resetDocxDownloaded, downloadPdf,
 } from './lib/extractionStorage';
 import {
   Zap, AlertTriangle, FlaskConical, Settings as SettingsIcon,
@@ -87,7 +87,7 @@ function AppInner() {
 
   const navigate = (p: Page) => { setPage(p); setSidebarOpen(false); };
 
-  // ── Analisi nuova ─────────────────────────────────────────────────────────
+  // ── Analisi nuova ────────────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async () => {
     if (files.length !== REQUIRED_FILES) return;
     setError(null); setIsDemoMode(false); setIsReadOnly(false);
@@ -106,7 +106,7 @@ function AppInner() {
     }
   }, [files, promptCustom.extraction]);
 
-  // ── Demo ──────────────────────────────────────────────────────────────────
+  // ── Demo ──────────────────────────────────────────────────────────────────────
   const handleLoadDemo = useCallback(async () => {
     setError(null); setIsDemoMode(true); setIsReadOnly(false);
     setAppState('extracting'); setProgress('Caricamento PDF di esempio...');
@@ -134,7 +134,7 @@ function AppInner() {
     }
   }, []);
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
+  // ── Reset ────────────────────────────────────────────────────────────────────────
   const handleReset = () => {
     setFiles([]); setAppState('idle'); setExtractedData(null); setNarrativeData(null);
     setError(''); setProgress(''); setIsDemoMode(false); setIsReadOnly(false);
@@ -142,7 +142,7 @@ function AppInner() {
     step1Promise.current = Promise.resolve(null);
   };
 
-  // ── Genera narrativa (core) ───────────────────────────────────────────────
+  // ── Genera narrativa (core) ───────────────────────────────────────────────────
   const doGenerateNarrative = useCallback(async (finalData: ExtractedData) => {
     try {
       setAppState('generating');
@@ -172,12 +172,12 @@ function AppInner() {
     }
   }, [isDemoMode, promptCustom.narrative]);
 
-  // ── Conferma dati dalla DataVerification ─────────────────────────────────
+  // ── Conferma dati dalla DataVerification ───────────────────────────────────────────
   const handleApprove = useCallback(async (finalData: ExtractedData) => {
     await doGenerateNarrative(finalData);
   }, [doGenerateNarrative]);
 
-  // ── Rigenera narrativa (con eventuale warning se DOCX già scaricato) ──────
+  // ── Rigenera narrativa (con eventuale warning se DOCX già scaricato) ────────
   const handleRegenerateNarrative = useCallback((finalData: ExtractedData) => {
     if (currentDocxDld.current) {
       pendingRegenData.current = finalData;
@@ -190,17 +190,19 @@ function AppInner() {
   const confirmRegen = useCallback(() => {
     setShowRegenWarning(false);
     currentDocxDld.current = false;
+    // Resetta il flag anche sul KV in modo da mantenere consistenza
+    if (currentHistoryId.current) resetDocxDownloaded(currentHistoryId.current);
     if (pendingRegenData.current) doGenerateNarrative(pendingRegenData.current);
     pendingRegenData.current = null;
   }, [doGenerateNarrative]);
 
-  // ── DOCX scaricato ────────────────────────────────────────────────────────
+  // ── DOCX scaricato ───────────────────────────────────────────────────────────────
   const handleDocxDownloaded = useCallback(() => {
     currentDocxDld.current = true;
     if (currentHistoryId.current) markDocxDownloaded(currentHistoryId.current);
   }, []);
 
-  // ── Carica da storico ─────────────────────────────────────────────────────
+  // ── Carica da storico ───────────────────────────────────────────────────────────────
   const handleLoadFromHistory = useCallback(async (record: ExtractionRecord, meta: ExtractionMeta) => {
     setHistorySidebarOpen(false);
     setError(null); setNarrativeData(null);

@@ -9,7 +9,7 @@
  *   POST /prompts     — salva prompt custom
  *   GET  /models      — lista modelli da OpenRouter
  *   POST /history     — crea/aggiorna record storico
- *                       step: 'extracted' | 'confirmed' | 'reported' | 'docx_downloaded'
+ *                       step: 'extracted' | 'confirmed' | 'reported' | 'docx_downloaded' | 'docx_reset'
  *   GET  /history     — lista metadata ExtractionMeta[]
  *   GET  /history/:id — record completo ExtractionRecord
  *   PUT  /files/:key  — upload PDF su KV (Base64, TTL 90 giorni)
@@ -40,7 +40,7 @@ const DEFAULT_MODELS = {
 };
 
 const DEFAULT_PROMPTS = {
-  extraction: `Presta particolare attenzione a:\n- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)\n- Leggere le note integrative per voci non presenti nello schema abbreviato\n- Riportare i valori in unità di euro (non in migliaia)`,
+  extraction: `Presta particolare attenzione a:\n- Distinguere i dati dell'anno corrente da quelli dell'anno precedente (colonne a destra nei prospetti)\n- Leggere le note integrative per voci non presenti nello schema abbreviato\n- Riportare i valori in unit\u00e0 di euro (non in migliaia)`,
   narrative:  `Utilizza un tono formale e prudente, tipico della pubblica amministrazione italiana.\nSe i dati mostrano trend negativi evidenti, sottolineali con chiarezza nella conclusione.\nEvita perifrasi: esprimi i giudizi in modo diretto e non ambiguo.`,
 };
 
@@ -114,7 +114,7 @@ export default {
     const url      = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
-    // ── PUT /files/:key ────────────────────────────────────────────────────────
+    // ── PUT /files/:key ───────────────────────────────────────────────────────
     if (request.method === 'PUT' && pathname.startsWith('/files/')) {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
@@ -131,7 +131,7 @@ export default {
       }
     }
 
-    // ── GET /files/:key ────────────────────────────────────────────────────────
+    // ── GET /files/:key ───────────────────────────────────────────────────────
     if (request.method === 'GET' && pathname.startsWith('/files/')) {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
@@ -154,7 +154,7 @@ export default {
       }
     }
 
-    // ── DELETE /files/:key ─────────────────────────────────────────────────────
+    // ── DELETE /files/:key ──────────────────────────────────────────────────────
     if (request.method === 'DELETE' && pathname.startsWith('/files/')) {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const key = decodeURIComponent(pathname.slice(7));
@@ -178,7 +178,7 @@ export default {
       }
     }
 
-    // ── POST /config ───────────────────────────────────────────────────────────
+    // ── POST /config ──────────────────────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/config') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const body = await parseBody(request);
@@ -194,7 +194,7 @@ export default {
       }
     }
 
-    // ── GET /prompts ───────────────────────────────────────────────────────────
+    // ── GET /prompts ──────────────────────────────────────────────────────────
     if (request.method === 'GET' && pathname === '/prompts') {
       try {
         const raw = kv ? await kv.get(KV_PROMPTS_KEY) : null;
@@ -206,7 +206,7 @@ export default {
       }
     }
 
-    // ── POST /prompts ──────────────────────────────────────────────────────────
+    // ── POST /prompts ─────────────────────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/prompts') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const body = await parseBody(request);
@@ -237,7 +237,7 @@ export default {
       }
     }
 
-    // ── GET /history ───────────────────────────────────────────────────────────
+    // ── GET /history ──────────────────────────────────────────────────────────
     if (request.method === 'GET' && pathname === '/history') {
       if (!kv) return jsonResponse([], 200, corsHeaders);
       try {
@@ -250,7 +250,7 @@ export default {
       }
     }
 
-    // ── POST /history ──────────────────────────────────────────────────────────
+    // ── POST /history ─────────────────────────────────────────────────────────
     if (request.method === 'POST' && pathname === '/history') {
       if (!kv) return jsonResponse({ error: 'KV GSE_CONFIG non configurato.' }, 500, corsHeaders);
       const body = await parseBody(request);
@@ -258,12 +258,12 @@ export default {
 
       const { id: existingId, step, extractedData, confirmedData, narrativeData, isDemoMode, fileKeys } = body;
 
-      const validSteps = ['extracted', 'confirmed', 'reported', 'docx_downloaded'];
+      const validSteps = ['extracted', 'confirmed', 'reported', 'docx_downloaded', 'docx_reset'];
       if (!step || !validSteps.includes(step))
         return jsonResponse({ error: `Campo step invalido (usa ${validSteps.join('|')}).` }, 400, corsHeaders);
 
       try {
-        // ── Nuovo record (step: extracted) ────────────────────────────────────
+        // ── Nuovo record (step: extracted) ─────────────────────────────────────────
         if (step === 'extracted') {
           if (!extractedData) return jsonResponse({ error: 'extractedData mancante.' }, 400, corsHeaders);
           const timestamp = Date.now();
@@ -285,7 +285,7 @@ export default {
           return jsonResponse({ ok: true, id }, 200, corsHeaders);
         }
 
-        // ── Aggiornamento record esistente ────────────────────────────────────
+        // ── Aggiornamento record esistente ─────────────────────────────────────
         if (!existingId) return jsonResponse({ error: 'id mancante per step != extracted.' }, 400, corsHeaders);
         let rec;
         const raw = await kv.get(existingId);
@@ -312,6 +312,9 @@ export default {
         } else if (step === 'docx_downloaded') {
           rec.docxDownloaded = true;
           // step rimane invariato (es. 'reported')
+        } else if (step === 'docx_reset') {
+          rec.docxDownloaded = false;
+          // step rimane invariato — il record resta 'reported'
         }
 
         await kv.put(rec.id, JSON.stringify(rec));
@@ -323,7 +326,7 @@ export default {
       }
     }
 
-    // ── GET /history/:id ───────────────────────────────────────────────────────
+    // ── GET /history/:id ────────────────────────────────────────────────────────
     const historyMatch = pathname.match(/^\/history\/(.+)$/);
     if (request.method === 'GET' && historyMatch) {
       const id = decodeURIComponent(historyMatch[1]);
@@ -337,7 +340,7 @@ export default {
       }
     }
 
-    // ── POST / — proxy OpenRouter ──────────────────────────────────────────────
+    // ── POST / — proxy OpenRouter ─────────────────────────────────────────────────────
     if (request.method === 'POST' && (pathname === '/' || pathname === '')) {
       if (!env.OPENROUTER_API_KEY) return jsonResponse({ error: { message: 'Chiave API non configurata.' } }, 500, corsHeaders);
       const body = await parseBody(request);
@@ -360,7 +363,7 @@ export default {
   },
 };
 
-// ── Helper: aggiorna history_index ────────────────────────────────────────────
+// ── Helper: aggiorna history_index ────────────────────────────────────────────────
 async function updateIndex(kv, record) {
   let index = [];
   try { const r = await kv.get(KV_HISTORY_INDEX); if (r) index = JSON.parse(r); } catch { /**/ }
