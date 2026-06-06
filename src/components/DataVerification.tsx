@@ -4,7 +4,7 @@ import { TextLayer } from 'pdfjs-dist';
 import { ExtractedData, ExtractedField, DerivedField, FinancialYearData } from '../types';
 import { computeDerivedFields } from '../kpiCalculator';
 import { BALANCE_SCHEMA, BalanceFieldKey, getSearchLabels } from '../balanceSchema';
-import { AlertTriangle, CheckCircle, ChevronRight, FileSearch, Layers } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ChevronRight, FileSearch, Layers, RefreshCw } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
@@ -845,10 +845,18 @@ const HIGHLIGHT_COLORS = [
 interface Props {
   files: File[];
   extractedData: ExtractedData;
-  onApprove: (updatedData: ExtractedData) => void;
+  onApprove: (updatedData: ExtractedData) => void | Promise<void>;
+  readOnly?: boolean;
+  onRegenerateNarrative?: (finalData: ExtractedData) => void;
 }
 
-export const DataVerification: React.FC<Props> = ({ files, extractedData, onApprove }) => {
+export const DataVerification: React.FC<Props> = ({
+  files,
+  extractedData,
+  onApprove,
+  readOnly = false,
+  onRegenerateNarrative,
+}) => {
   const [data, setData]                       = useState<ExtractedData>(JSON.parse(JSON.stringify(extractedData)));
   const [activeTab, setActiveTab]             = useState(0);
   const [activeHighlight, setActiveHighlight] = useState<ActiveHighlight | null>(null);
@@ -909,6 +917,7 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
   }, [files, getPdfDoc]);
 
   const updateYearField = (yearIdx: number, key: BalanceFieldKey, value: number | null) => {
+    if (readOnly) return;
     setData(prev => {
       const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
       (next.yearsData[yearIdx][key] as ExtractedField<number>).value = value;
@@ -989,14 +998,17 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium">&euro;</span>
                 <NumericInput
                   value={data.gseResidual?.value}
+                  readOnly={readOnly}
                   className={`w-full pl-8 pr-3 py-3 border rounded-lg text-sm font-medium focus:outline-none focus:ring-2 transition ${
                     showGseError && !gseResidualValid
                       ? 'border-red-400 ring-1 ring-red-300 bg-red-50 focus:ring-red-400'
+                      : readOnly
+                      ? 'border-slate-200 bg-slate-50 text-slate-500 cursor-default'
                       : 'border-slate-300 focus:ring-purple-400 focus:border-transparent'
                   }`}
                   onChange={n => {
+                    if (readOnly) return;
                     setData(prev => ({ ...prev, gseResidual: { ...prev.gseResidual, value: n } }));
-                    // Rimuovi errore solo se il nuovo valore è > 0
                     if (n !== null && n > 0) setShowGseError(false);
                   }}
                 />
@@ -1019,18 +1031,28 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
 
             return (
               <div className="space-y-3">
-                <p className="text-xs text-slate-500 mb-1">Verifica e correggi i dati estratti. Clicca su un campo per evidenziare la voce nel PDF.</p>
+                <p className="text-xs text-slate-500 mb-1">
+                  {readOnly
+                    ? 'Dati del report in sola lettura. Usa "Rigenera narrativa" per aggiornare il testo.'
+                    : 'Verifica e correggi i dati estratti. Clicca su un campo per evidenziare la voce nel PDF.'}
+                </p>
 
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Anno di Esercizio</label>
                   <input
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                    className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-300 ${
+                      readOnly ? 'bg-slate-50 text-slate-500 cursor-default' : 'bg-slate-50 text-slate-700'
+                    }`}
                     value={year.year ?? ''}
-                    onChange={e => setData(prev => {
-                      const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
-                      next.yearsData[yearIdx].year = e.target.value;
-                      return next;
-                    })}
+                    readOnly={readOnly}
+                    onChange={e => {
+                      if (readOnly) return;
+                      setData(prev => {
+                        const next = JSON.parse(JSON.stringify(prev)) as ExtractedData;
+                        next.yearsData[yearIdx].year = e.target.value;
+                        return next;
+                      });
+                    }}
                   />
                 </div>
 
@@ -1080,8 +1102,11 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
                       <NumericInput
                         value={field?.value}
                         isUnavailable={isUnavail}
+                        readOnly={readOnly}
                         className={`w-full px-3 py-2 border rounded-lg text-sm transition focus:outline-none focus:ring-2 ${
-                          isMultiRow
+                          readOnly
+                            ? 'border-slate-200 bg-slate-50 text-slate-500 cursor-default'
+                            : isMultiRow
                             ? 'border-violet-200 bg-violet-50 text-violet-800 focus:ring-violet-300 cursor-pointer font-semibold'
                             : isUnavail
                             ? 'border-amber-200 bg-amber-50 text-amber-600 focus:ring-amber-300 cursor-pointer italic'
@@ -1162,26 +1187,38 @@ export const DataVerification: React.FC<Props> = ({ files, extractedData, onAppr
           })()}
         </div>
 
-        {/* ---- Footer con bottone conferma ---- */}
+        {/* ---- Footer con bottone conferma / rigenera ---- */}
         <div className="p-4 border-t border-slate-200 bg-slate-50">
-          {!gseResidualValid && (
-            <p className="text-[11px] text-amber-600 text-center mb-2 flex items-center justify-center gap-1">
-              <AlertTriangle className="w-3 h-3" />
-              Importo GSE obbligatorio e &gt; 0 — vai al tab &ldquo;Importo GSE&rdquo;
-            </p>
+          {readOnly ? (
+            <button
+              onClick={() => onRegenerateNarrative?.(data)}
+              className="w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white"
+            >
+              <RefreshCw className="w-5 h-5" />
+              Rigenera narrativa
+            </button>
+          ) : (
+            <>
+              {!gseResidualValid && (
+                <p className="text-[11px] text-amber-600 text-center mb-2 flex items-center justify-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  Importo GSE obbligatorio e &gt; 0 — vai al tab &ldquo;Importo GSE&rdquo;
+                </p>
+              )}
+              <button
+                onClick={handleConfirm}
+                disabled={!gseResidualValid}
+                className={`w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm ${
+                  gseResidualValid
+                    ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                <CheckCircle className="w-5 h-5" />
+                Conferma dati e genera report
+              </button>
+            </>
           )}
-          <button
-            onClick={handleConfirm}
-            disabled={!gseResidualValid}
-            className={`w-full flex items-center justify-center gap-2 py-3 px-6 font-semibold rounded-xl transition-colors shadow-sm ${
-              gseResidualValid
-                ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'
-                : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            <CheckCircle className="w-5 h-5" />
-            Conferma dati e genera report
-          </button>
         </div>
       </div>
 
