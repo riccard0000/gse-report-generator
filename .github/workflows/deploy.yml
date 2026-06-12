@@ -50,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    outputs:
+      deploy_url: ${{ steps.get_url.outputs.url }}
 
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +63,7 @@ jobs:
           path: dist/
 
       - name: Deploy to Azure Static Web Apps
+        id: swa_deploy
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
@@ -69,6 +72,90 @@ jobs:
           app_location: 'dist'
           output_location: ''
           skip_app_build: true
+
+      - name: Resolve deploy URL
+        id: get_url
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
+            # URL preview Azure SWA: sostituisce il dominio base con -PR_NUM
+            BASE=$(echo "${{ secrets.AZURE_STATIC_WEB_APPS_URL }}" | sed 's/\.azurestaticapps\.net//')
+            echo "url=${BASE}-${PR_NUM}.westeurope.azurestaticapps.net" >> $GITHUB_OUTPUT
+          else
+            echo "url=${{ secrets.AZURE_STATIC_WEB_APPS_URL }}" >> $GITHUB_OUTPUT
+          fi
+
+  # ── SMOKE TEST ────────────────────────────────────────────────────
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: deploy-frontend
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+
+    steps:
+      - name: Wait for CDN propagation
+        run: sleep 20
+
+      - name: Smoke test — index.html risponde 200
+        run: |
+          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
+          echo "Testing: $URL"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$URL")
+          echo "HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: index.html ha risposto $STATUS invece di 200"
+            exit 1
+          fi
+          echo "OK: index.html risponde 200"
+
+      - name: Smoke test — JS bundle presente (no 404)
+        run: |
+          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
+          # Scarica index.html ed estrae il path del bundle JS principale
+          HTML=$(curl -s --max-time 15 "$URL")
+          JS_PATH=$(echo "$HTML" | grep -oP '(?<=src=")/assets/index-[^"]+\.js' | head -1)
+          if [ -z "$JS_PATH" ]; then
+            echo "WARN: impossibile trovare il bundle JS in index.html — skip"
+            exit 0
+          fi
+          JS_URL="${URL}/${JS_PATH}"
+          echo "Testing bundle: $JS_URL"
+          JS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$JS_URL")
+          echo "HTTP status: $JS_STATUS"
+          if [ "$JS_STATUS" != "200" ]; then
+            echo "FAIL: bundle JS ha risposto $JS_STATUS invece di 200 — probabile errore MIME o base path"
+            exit 1
+          fi
+          echo "OK: bundle JS risponde 200"
+
+      - name: Smoke test — Content-Type corretto per JS
+        run: |
+          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
+          HTML=$(curl -s --max-time 15 "$URL")
+          JS_PATH=$(echo "$HTML" | grep -oP '(?<=src=")/assets/index-[^"]+\.js' | head -1)
+          if [ -z "$JS_PATH" ]; then exit 0; fi
+          JS_URL="${URL}/${JS_PATH}"
+          CONTENT_TYPE=$(curl -s -o /dev/null -w "%{content_type}" --max-time 15 "$JS_URL")
+          echo "Content-Type: $CONTENT_TYPE"
+          if echo "$CONTENT_TYPE" | grep -qv 'javascript'; then
+            echo "FAIL: Content-Type non è javascript: $CONTENT_TYPE"
+            exit 1
+          fi
+          echo "OK: Content-Type corretto"
+
+      - name: Smoke test — favicon presente
+        run: |
+          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
+          FAV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${URL}/favicon.svg")
+          echo "favicon.svg status: $FAV_STATUS"
+          if [ "$FAV_STATUS" = "404" ]; then
+            echo "WARN: favicon.svg non trovato (non bloccante)"
+          else
+            echo "OK: favicon risponde $FAV_STATUS"
+          fi
+
+      - name: Report risultato
+        if: success()
+        run: echo "✅ Tutti i smoke test superati — deploy verificato."
 
   # ── CHIUDI preview su PR chiusa ────────────────────────────────
   close-preview:
@@ -85,7 +172,7 @@ jobs:
   # ── DEPLOY BACKEND → Azure Functions ───────────────────────────
   deploy-backend:
     runs-on: ubuntu-latest
-    needs: build
+    needs: smoke-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
