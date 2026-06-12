@@ -1,0 +1,74 @@
+name: Debug Backend Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP: rg-gse-report
+      FUNCTION_APP: gse-proxy
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/azure-deploy
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install function dependencies
+        working-directory: functions
+        run: npm install --omit=dev
+
+      - name: Remove WEBSITE_RUN_FROM_PACKAGE
+        run: |
+          az functionapp config appsettings delete \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --setting-names WEBSITE_RUN_FROM_PACKAGE 2>/dev/null || true
+
+      - name: Update app settings
+        run: |
+          az functionapp config appsettings set \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --settings \
+              FUNCTIONS_WORKER_RUNTIME="node" \
+              OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+              AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+              STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
+              AZURE_STORAGE_TABLE_NAME="GseConfig" \
+              AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
+              FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+
+      - name: Deploy Azure Function
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP }}
+          package: functions
+          respect-funcignore: true
+
+      - name: Verify deploy
+        run: |
+          sleep 30
+          STATUS=$(az functionapp show \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --query "state" -o tsv)
+          echo "Function app state: $STATUS"
+          [ "$STATUS" = "Running" ] && echo "✅ Deploy completato" || (echo "FAIL" && exit 1)
