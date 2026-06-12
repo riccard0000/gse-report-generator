@@ -98,6 +98,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Pre-deployment health check
+        run: |
+          echo "🔍 Checking Function App health before deployment..."
+          STATE=$(az functionapp show \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --query "state" -o tsv)
+          echo "Current state: $STATE"
+          
+          # If stopped, start it first
+          if [ "$STATE" = "Stopped" ]; then
+            echo "⏳ Function App is stopped, starting it..."
+            az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+            sleep 10
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -130,20 +146,34 @@ jobs:
       - name: Create functions deployment package
         run: |
           cd functions
-          # Exclude node_modules - let Azure build it on Linux server for proper native module compilation
-          zip -r ../functions-deploy.zip . \
+          # Exclude problematic files that cause Sync Trigger failures
+          # Use lower compression level (-1) for better compatibility with Azure
+          zip -1 -r ../functions-deploy.zip . \
             -x "*.test.js" \
             ".env*" \
             "local.settings.json*" \
             ".git*" \
+            ".DS_Store" \
+            ".gitignore" \
+            ".npmignore" \
             "README.md" \
             "*.md" \
-            "node_modules/*"
+            "node_modules/*" \
+            "node_modules/" \
+            ".funcignore"
           cd ..
-          echo "Package created successfully"
+          echo "✅ Package created successfully"
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
-          echo "ZIP contents verification:"
-          unzip -l functions-deploy.zip | head -20
+          echo "ZIP contents (first 25 files):"
+          unzip -l functions-deploy.zip | head -30
+          echo ""
+          echo "Validating ZIP integrity..."
+          if unzip -t functions-deploy.zip > /dev/null 2>&1; then
+            echo "✅ ZIP integrity check PASSED"
+          else
+            echo "❌ ZIP integrity check FAILED - deployment will likely fail"
+            exit 1
+          fi
 
       - name: Deploy Azure Function
         uses: azure/functions-action@v1
@@ -151,6 +181,16 @@ jobs:
           app-name: ${{ env.FUNCTION_APP }}
           package: functions-deploy.zip
           scm-do-build-during-deployment: true
+          respect-pom-xml: false
+          respect-package-json: true
+
+      - name: Force restart Function App (trigger sync)
+        run: |
+          echo "🔄 Forcing Function App restart to sync triggers..."
+          az functionapp stop --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+          sleep 10
+          az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+          sleep 20
 
       - name: Verify deploy and check sync status
         run: |
