@@ -107,7 +107,7 @@ jobs:
         working-directory: functions
         run: npm install --omit=dev
 
-      - name: Zip functions package (exclude devDependencies source, keep node_modules prod)
+      - name: Zip functions package
         run: |
           cd functions
           zip -r ../functions-deploy.zip . \
@@ -115,7 +115,8 @@ jobs:
             --exclude ".env*" \
             --exclude "jest.config.*" \
             --exclude "tsconfig*.json" \
-            --exclude "*.map"
+            --exclude "*.map" \
+            --exclude "local.settings.json*"
           cd ..
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
 
@@ -126,6 +127,7 @@ jobs:
             --resource-group $RESOURCE_GROUP \
             --settings \
               FUNCTIONS_WORKER_RUNTIME="node" \
+              AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
               AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
@@ -133,13 +135,14 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Deploy Azure Function
-        uses: azure/functions-action@v1
-        with:
-          app-name: ${{ env.FUNCTION_APP }}
-          package: functions-deploy.zip
-          respect-funcignore: true
-          scm-do-build-during-deployment: false
+      - name: Deploy via zip deploy (bypasses WEBSITE_RUN_FROM_PACKAGE)
+        run: |
+          az functionapp deployment source config-zip \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --src functions-deploy.zip \
+            --build-remote false \
+            --timeout 120
 
       - name: Verify deploy
         run: |
