@@ -145,14 +145,39 @@ jobs:
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy ZIP to Function App
+      - name: Deploy via Kudu zipdeploy (synchronous, no polling hang)
+        timeout-minutes: 10
         run: |
-          echo "🚀 Deploying..."
-          az functionapp deployment source config-zip \
+          echo "🚀 Deploying via Kudu REST API..."
+
+          CREDS=$(az functionapp deployment list-publishing-credentials \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --src functions-deploy.zip
-          echo "✅ Deploy completed"
+            --query "{user:publishingUserName, pass:publishingPassword}" \
+            -o json)
+          KUDU_USER=$(echo $CREDS | jq -r '.user')
+          KUDU_PASS=$(echo $CREDS | jq -r '.pass')
+          SCM_URL="https://${FUNCTION_APP}.scm.azurewebsites.net"
+
+          # Use synchronous zipdeploy (no isAsync) - waits for completion, no 202 polling hang
+          HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
+            -X POST \
+            -u "$KUDU_USER:$KUDU_PASS" \
+            -H "Content-Type: application/zip" \
+            -H "Cache-Control: no-cache" \
+            --data-binary @functions-deploy.zip \
+            --max-time 540 \
+            "$SCM_URL/api/zipdeploy")
+
+          echo "Kudu deploy status: $HTTP_STATUS"
+          cat /tmp/kudu_response.txt || true
+
+          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "204" ]; then
+            echo "✅ Deploy completed"
+          else
+            echo "❌ Kudu deploy failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
 
       - name: Restart and wait for trigger sync
         run: |
