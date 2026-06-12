@@ -148,12 +148,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: functions/package-lock.json
 
       - name: Install function dependencies
         working-directory: functions
-        run: npm ci
+        run: npm install
 
       - name: Deploy Azure Function
         uses: Azure/functions-action@v1
