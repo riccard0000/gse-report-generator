@@ -107,7 +107,6 @@ jobs:
             --query "state" -o tsv)
           echo "Current state: $STATE"
           
-          # If stopped, start it first
           if [ "$STATE" = "Stopped" ]; then
             echo "⏳ Function App is stopped, starting it..."
             az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
@@ -125,11 +124,10 @@ jobs:
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --settings \
-              WEBSITE_RUN_FROM_PACKAGE="1" \
+              WEBSITE_RUN_FROM_PACKAGE="0" \
               AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               FUNCTIONS_WORKER_RUNTIME="node" \
               FUNCTIONS_EXTENSION_VERSION="~4" \
-              ENABLE_MSBUILD_PATH="true" \
               OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
               AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
@@ -146,8 +144,6 @@ jobs:
       - name: Create functions deployment package
         run: |
           cd functions
-          # Exclude problematic files that cause Sync Trigger failures
-          # Use lower compression level (-1) for better compatibility with Azure
           zip -1 -r ../functions-deploy.zip . \
             -x "*.test.js" \
             ".env*" \
@@ -158,8 +154,6 @@ jobs:
             ".npmignore" \
             "README.md" \
             "*.md" \
-            "node_modules/*" \
-            "node_modules/" \
             ".funcignore"
           cd ..
           echo "✅ Package created successfully"
@@ -180,9 +174,8 @@ jobs:
         with:
           app-name: ${{ env.FUNCTION_APP }}
           package: functions-deploy.zip
-          scm-do-build-during-deployment: true
+          scm-do-build-during-deployment: false
           respect-pom-xml: false
-          respect-package-json: true
 
       - name: Force restart Function App (trigger sync)
         run: |
@@ -203,7 +196,6 @@ jobs:
             --query "state" -o tsv)
           echo "Function app state: $STATUS"
           
-          # Get last 10 lines of logs
           echo ""
           echo "📋 Recent activity (last 10 entries):"
           az functionapp log tail \
@@ -212,7 +204,6 @@ jobs:
             --provider Microsoft.Web \
             --max-lines 10 || echo "⚠️  Log tail not available yet"
           
-          # Check if functions are synced
           echo ""
           echo "🔍 Checking function sync status..."
           FUNCTIONS=$(az functionapp function list \
@@ -228,9 +219,7 @@ jobs:
               --query "[].{name:name, language:language}" -o table
           else
             echo "❌ No functions found - trigger sync may have failed"
-            echo "Troubleshooting: Check WEBSITE_RUN_FROM_PACKAGE and scm-do-build-during-deployment settings"
             exit 1
           fi
           
-          # Final status check
           [ "$STATUS" = "Running" ] && echo "✅ Deploy completed successfully" || (echo "❌ Function app not in Running state" && exit 1)

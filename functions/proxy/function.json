@@ -5,7 +5,7 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "route": "{*restOfPath}",
+      "route": "proxy/{*restOfPath}",
       "methods": ["get", "post", "put", "delete", "options"]
     },
     {
