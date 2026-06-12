@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
@@ -147,11 +147,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '20'
 
-      - name: Install function dependencies
+      - name: Install function dependencies (production only)
         working-directory: functions
-        run: npm install
+        run: npm install --omit=dev
 
       - name: Deploy Azure Function
         uses: Azure/functions-action@v1
