@@ -166,15 +166,26 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
+      - name: Remove WEBSITE_RUN_FROM_PACKAGE if set
+        run: |
+          az functionapp config appsettings delete \
+            --name gse-proxy \
+            --resource-group rg-gse-report \
+            --setting-names WEBSITE_RUN_FROM_PACKAGE || true
+
       - name: Package and deploy via zip
         run: |
           cd functions
-          zip -r ../functions.zip . --exclude "*.git*" --exclude "local.settings.json"
+          zip -r ../functions.zip . \
+            --exclude "*.git*" \
+            --exclude "local.settings.json"
           cd ..
+          echo "Zip size: $(du -sh functions.zip | cut -f1)"
           az functionapp deployment source config-zip \
             --name gse-proxy \
             --resource-group rg-gse-report \
-            --src functions.zip
+            --src functions.zip \
+            --timeout 300
 
       - name: Verify deployment
         run: |
