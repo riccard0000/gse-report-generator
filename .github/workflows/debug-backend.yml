@@ -83,6 +83,8 @@ jobs:
             --resource-group $RESOURCE_GROUP \
             --settings \
               WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
+              FUNCTIONS_WORKER_RUNTIME="node" \
+              WEBSITE_NODE_DEFAULT_VERSION="~20" \
               OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
               AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
@@ -90,14 +92,16 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Restart and sync triggers
+      - name: Restart function app
         run: |
           az functionapp restart \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP
-          echo "Waiting for cold start (60s)..."
-          sleep 60
-          az rest \
-            --method post \
-            --url "https://management.azure.com/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$FUNCTION_APP/syncfunctiontriggers?api-version=2022-03-01"
-          echo "✅ Deploy completato"
+          echo "Waiting for cold start (90s)..."
+          sleep 90
+          STATUS=$(az functionapp show \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --query "state" -o tsv)
+          echo "Function app state: $STATUS"
+          [ "$STATUS" = "Running" ] && echo "✅ Deploy completato" || (echo "FAIL: stato $STATUS" && exit 1)
