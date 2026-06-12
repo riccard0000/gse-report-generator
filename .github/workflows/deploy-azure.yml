@@ -124,8 +124,8 @@ jobs:
       - name: Clean and install function dependencies
         working-directory: functions
         run: |
-          rm -rf node_modules package-lock.json
-          npm clean-install
+          rm -rf node_modules
+          npm ci
 
       - name: Create functions deployment package
         run: |
