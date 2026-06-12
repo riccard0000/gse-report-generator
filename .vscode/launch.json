@@ -1,13 +1,22 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Attach to Node Functions",
-            "type": "node",
-            "request": "attach",
-            "restart": true,
-            "port": 9229,
-            "preLaunchTask": "func: host start"
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to Node Functions",
+      "type": "node",
+      "request": "attach",
+      "restart": true,
+      "port": 9229,
+      "preLaunchTask": "func: host start"
+    },
+    {
+      "name": "🚀 Full Stack (Azurite + Functions + Vite)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "preLaunchTask": "Full Stack: Azurite + Functions + Vite",
+      "restart": true,
+      "sourceMaps": true
+    }
+  ]
 }
