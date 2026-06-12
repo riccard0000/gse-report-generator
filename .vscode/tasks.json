@@ -1,0 +1,75 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Azurite",
+      "type": "shell",
+      "command": "azurite --silent --location .azurite --debug .azurite/debug.log",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Azurite",
+          "endsPattern": "successfully listening"
+        }
+      },
+      "presentation": {
+        "label": "Azurite",
+        "group": "dev-servers",
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "Start Functions",
+      "type": "shell",
+      "command": "cd functions && func start",
+      "isBackground": true,
+      "dependsOn": "Start Azurite",
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Azure Functions Core Tools",
+          "endsPattern": "Host lock lease acquired"
+        }
+      },
+      "presentation": {
+        "label": "Functions",
+        "group": "dev-servers",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "Start Vite",
+      "type": "shell",
+      "command": "npm run dev",
+      "isBackground": true,
+      "dependsOn": "Start Functions",
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE",
+          "endsPattern": "ready in"
+        }
+      },
+      "presentation": {
+        "label": "Vite",
+        "group": "dev-servers",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "func: host start",
+      "type": "shell",
+      "command": "cd functions && func host start",
+      "isBackground": true,
+      "problemMatcher": "$func-node-watch",
+      "presentation": {
+        "label": "Functions",
+        "reveal": "always"
+      }
+    }
+  ]
+}
