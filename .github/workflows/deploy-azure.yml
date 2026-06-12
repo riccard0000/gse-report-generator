@@ -103,16 +103,21 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install function dependencies
+      - name: Install function dependencies (prod only)
         working-directory: functions
         run: npm install --omit=dev
 
-      - name: Remove WEBSITE_RUN_FROM_PACKAGE
+      - name: Zip functions package (exclude devDependencies source, keep node_modules prod)
         run: |
-          az functionapp config appsettings delete \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --setting-names WEBSITE_RUN_FROM_PACKAGE 2>/dev/null || true
+          cd functions
+          zip -r ../functions-deploy.zip . \
+            --exclude "*.test.*" \
+            --exclude ".env*" \
+            --exclude "jest.config.*" \
+            --exclude "tsconfig*.json" \
+            --exclude "*.map"
+          cd ..
+          echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
 
       - name: Update app settings
         run: |
@@ -132,8 +137,9 @@ jobs:
         uses: azure/functions-action@v1
         with:
           app-name: ${{ env.FUNCTION_APP }}
-          package: functions
+          package: functions-deploy.zip
           respect-funcignore: true
+          scm-do-build-during-deployment: false
 
       - name: Verify deploy
         run: |
