@@ -12,7 +12,7 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 permissions:
-  id-token: write   # necessario per OIDC Workload Identity
+  id-token: write
   contents: read
 
 jobs:
@@ -66,8 +66,8 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ github.token }}
           action: 'upload'
-          app_location: '/'
-          output_location: 'dist'
+          app_location: 'dist'
+          output_location: ''
           skip_app_build: true
 
   # ── CHIUDI preview su PR chiusa ────────────────────────────────
@@ -91,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure Login (OIDC — nessun segreto statico)
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
