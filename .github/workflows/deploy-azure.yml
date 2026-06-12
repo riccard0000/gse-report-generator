@@ -149,16 +149,42 @@ jobs:
           unzip -l functions-deploy.zip
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy via Azure CLI (bypasses functions-action Sync Trigger bug)
+      - name: Deploy via Kudu zipdeploy API (bypasses az CLI SCM JSON bug)
         run: |
-          echo "🚀 Deploying ZIP via az CLI..."
-          az functionapp deployment source config-zip \
+          echo "🚀 Deploying via Kudu REST API..."
+          # Get publishing credentials
+          CREDS=$(az functionapp deployment list-publishing-credentials \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --src functions-deploy.zip \
-            --build-remote true \
-            --timeout 300
-          echo "✅ ZIP deployed"
+            --query "{user:publishingUserName, pass:publishingPassword}" \
+            -o json)
+          KUDU_USER=$(echo $CREDS | jq -r '.user')
+          KUDU_PASS=$(echo $CREDS | jq -r '.pass')
+
+          # Push ZIP to Kudu /api/zipdeploy with remote build
+          HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
+            -X POST \
+            -u "$KUDU_USER:$KUDU_PASS" \
+            -H "Content-Type: application/zip" \
+            -H "Cache-Control: no-cache" \
+            --data-binary @functions-deploy.zip \
+            --max-time 300 \
+            "https://${FUNCTION_APP}.scm.azurewebsites.net/api/zipdeploy?isAsync=true&SCM_DO_BUILD_DURING_DEPLOYMENT=true")
+
+          echo "Kudu response status: $HTTP_STATUS"
+          cat /tmp/kudu_response.txt || true
+
+          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "202" ]; then
+            echo "✅ ZIP accepted by Kudu"
+          else
+            echo "❌ Kudu deploy failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
+
+      - name: Wait for remote build to complete
+        run: |
+          echo "⏳ Waiting 60s for Oryx remote build..."
+          sleep 60
 
       - name: Restart and wait for trigger sync
         run: |
