@@ -49,8 +49,6 @@ jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
     needs: build
-    outputs:
-      deploy_url: ${{ steps.get_url.outputs.url }}
 
     steps:
       - uses: actions/checkout@v4
@@ -71,14 +69,12 @@ jobs:
           output_location: ''
           skip_app_build: true
 
-      - name: Resolve deploy URL
-        id: get_url
-        run: echo "url=${{ secrets.AZURE_STATIC_WEB_APPS_URL }}" >> $GITHUB_OUTPUT
-
   # ── SMOKE TEST ────────────────────────────────────────────────────
   smoke-test:
     runs-on: ubuntu-latest
     needs: deploy-frontend
+    env:
+      SITE_URL: ${{ secrets.AZURE_STATIC_WEB_APPS_URL }}
 
     steps:
       - name: Wait for CDN propagation
@@ -86,9 +82,8 @@ jobs:
 
       - name: Smoke test — index.html risponde 200
         run: |
-          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
-          echo "Testing: $URL"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$URL")
+          echo "Testing: $SITE_URL"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$SITE_URL")
           echo "HTTP status: $STATUS"
           if [ "$STATUS" != "200" ]; then
             echo "FAIL: index.html ha risposto $STATUS invece di 200"
@@ -96,16 +91,15 @@ jobs:
           fi
           echo "OK: index.html risponde 200"
 
-      - name: Smoke test — JS bundle presente (no 404)
+      - name: Smoke test — JS bundle presente e corretto
         run: |
-          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
-          HTML=$(curl -s --max-time 15 "$URL")
+          HTML=$(curl -s --max-time 15 "$SITE_URL")
           JS_PATH=$(echo "$HTML" | grep -oP '(?<=src=")/assets/index-[^"]+\.js' | head -1)
           if [ -z "$JS_PATH" ]; then
             echo "WARN: bundle JS non trovato in index.html — skip"
             exit 0
           fi
-          JS_URL="${URL}/${JS_PATH}"
+          JS_URL="${SITE_URL}/${JS_PATH}"
           echo "Testing bundle: $JS_URL"
           JS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$JS_URL")
           echo "HTTP status: $JS_STATUS"
@@ -113,27 +107,17 @@ jobs:
             echo "FAIL: bundle JS ha risposto $JS_STATUS — probabile errore MIME o base path"
             exit 1
           fi
-          echo "OK: bundle JS risponde 200"
-
-      - name: Smoke test — Content-Type corretto per JS
-        run: |
-          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
-          HTML=$(curl -s --max-time 15 "$URL")
-          JS_PATH=$(echo "$HTML" | grep -oP '(?<=src=")/assets/index-[^"]+\.js' | head -1)
-          if [ -z "$JS_PATH" ]; then exit 0; fi
-          JS_URL="${URL}/${JS_PATH}"
           CONTENT_TYPE=$(curl -s -o /dev/null -w "%{content_type}" --max-time 15 "$JS_URL")
           echo "Content-Type: $CONTENT_TYPE"
           if echo "$CONTENT_TYPE" | grep -qv 'javascript'; then
             echo "FAIL: Content-Type non è javascript: $CONTENT_TYPE"
             exit 1
           fi
-          echo "OK: Content-Type corretto"
+          echo "OK: bundle JS risponde 200 con Content-Type corretto"
 
       - name: Smoke test — favicon presente
         run: |
-          URL="${{ needs.deploy-frontend.outputs.deploy_url }}"
-          FAV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${URL}/favicon.svg")
+          FAV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${SITE_URL}/favicon.svg")
           echo "favicon.svg status: $FAV_STATUS"
           if [ "$FAV_STATUS" = "404" ]; then
             echo "WARN: favicon.svg non trovato (non bloccante)"
