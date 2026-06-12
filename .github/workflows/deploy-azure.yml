@@ -149,9 +149,10 @@ jobs:
           unzip -l functions-deploy.zip
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy via Kudu zipdeploy API (bypasses az CLI SCM JSON bug)
+      - name: Deploy via Kudu zipdeploy API
         run: |
           echo "🚀 Deploying via Kudu REST API..."
+
           # Get publishing credentials
           CREDS=$(az functionapp deployment list-publishing-credentials \
             --name $FUNCTION_APP \
@@ -160,8 +161,30 @@ jobs:
             -o json)
           KUDU_USER=$(echo $CREDS | jq -r '.user')
           KUDU_PASS=$(echo $CREDS | jq -r '.pass')
+          SCM_URL="https://${FUNCTION_APP}.scm.azurewebsites.net"
 
-          # Push ZIP to Kudu /api/zipdeploy with remote build
+          # Warm up SCM site (Linux Consumption goes to sleep → 503 without this)
+          echo "⏳ Waking up SCM site..."
+          for i in 1 2 3 4 5; do
+            SCM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -u "$KUDU_USER:$KUDU_PASS" \
+              --max-time 30 \
+              "$SCM_URL/api/settings")
+            echo "  Attempt $i: SCM status $SCM_STATUS"
+            if [ "$SCM_STATUS" = "200" ]; then
+              echo "✅ SCM site is awake"
+              break
+            fi
+            echo "  SCM not ready yet, waiting 15s..."
+            sleep 15
+          done
+
+          if [ "$SCM_STATUS" != "200" ]; then
+            echo "❌ SCM site did not wake up after 5 attempts (last status: $SCM_STATUS)"
+            exit 1
+          fi
+
+          # Push ZIP
           HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
             -X POST \
             -u "$KUDU_USER:$KUDU_PASS" \
@@ -169,9 +192,9 @@ jobs:
             -H "Cache-Control: no-cache" \
             --data-binary @functions-deploy.zip \
             --max-time 300 \
-            "https://${FUNCTION_APP}.scm.azurewebsites.net/api/zipdeploy?isAsync=true&SCM_DO_BUILD_DURING_DEPLOYMENT=true")
+            "$SCM_URL/api/zipdeploy?isAsync=true&SCM_DO_BUILD_DURING_DEPLOYMENT=true")
 
-          echo "Kudu response status: $HTTP_STATUS"
+          echo "Kudu deploy status: $HTTP_STATUS"
           cat /tmp/kudu_response.txt || true
 
           if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "202" ]; then
