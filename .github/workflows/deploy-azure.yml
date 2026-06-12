@@ -153,13 +153,6 @@ jobs:
         working-directory: functions
         run: npm install --omit=dev
 
-      - name: Deploy Azure Function
-        uses: Azure/functions-action@v1
-        with:
-          app-name: 'gse-proxy'
-          package: './functions'
-          respect-funcignore: true
-
       - name: Set Function App environment variables
         run: |
           az functionapp config appsettings set \
@@ -172,3 +165,28 @@ jobs:
               AZURE_STORAGE_TABLE_NAME="GseConfig" \
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+
+      - name: Package and deploy via zip
+        run: |
+          cd functions
+          zip -r ../functions.zip . --exclude "*.git*" --exclude "local.settings.json"
+          cd ..
+          az functionapp deployment source config-zip \
+            --name gse-proxy \
+            --resource-group rg-gse-report \
+            --src functions.zip
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for function app to restart..."
+          sleep 15
+          STATUS=$(az functionapp show \
+            --name gse-proxy \
+            --resource-group rg-gse-report \
+            --query "state" -o tsv)
+          echo "Function app state: $STATUS"
+          if [ "$STATUS" != "Running" ]; then
+            echo "FAIL: function app non è in stato Running"
+            exit 1
+          fi
+          echo "✅ Function app in esecuzione"
