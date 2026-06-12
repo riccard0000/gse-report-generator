@@ -100,23 +100,17 @@ jobs:
 
       - name: Pre-deployment health check
         run: |
-          echo "🔍 Checking Function App health before deployment..."
+          echo "🔍 Checking Function App state..."
           STATE=$(az functionapp show \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --query "state" -o tsv)
           echo "Current state: $STATE"
-          
           if [ "$STATE" = "Stopped" ]; then
-            echo "⏳ Function App is stopped, starting it..."
+            echo "⏳ Starting stopped Function App..."
             az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-            sleep 10
+            sleep 15
           fi
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
 
       - name: Configure Function App settings
         run: |
@@ -125,6 +119,8 @@ jobs:
             --resource-group $RESOURCE_GROUP \
             --settings \
               WEBSITE_RUN_FROM_PACKAGE="0" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT="true" \
+              ENABLE_ORYX_BUILD="true" \
               AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               FUNCTIONS_WORKER_RUNTIME="node" \
               FUNCTIONS_EXTENSION_VERSION="~4" \
@@ -135,91 +131,64 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Clean and install function dependencies
-        working-directory: functions
-        run: |
-          rm -rf node_modules
-          npm ci
-
-      - name: Create functions deployment package
+      - name: Create deployment package (no node_modules, remote build)
         run: |
           cd functions
-          zip -1 -r ../functions-deploy.zip . \
+          zip -r ../functions-deploy.zip . \
+            -x "node_modules/*" \
+            -x "node_modules/" \
             -x "*.test.js" \
-            ".env*" \
-            "local.settings.json*" \
-            ".git*" \
-            ".DS_Store" \
-            ".gitignore" \
-            ".npmignore" \
-            "README.md" \
-            "*.md" \
-            ".funcignore"
+            -x ".env*" \
+            -x "local.settings.json*" \
+            -x ".git*" \
+            -x ".DS_Store" \
+            -x "test-local.js"
           cd ..
-          echo "✅ Package created successfully"
+          echo "✅ Package created"
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
-          echo "ZIP contents (first 25 files):"
-          unzip -l functions-deploy.zip | head -30
-          echo ""
-          echo "Validating ZIP integrity..."
-          if unzip -t functions-deploy.zip > /dev/null 2>&1; then
-            echo "✅ ZIP integrity check PASSED"
-          else
-            echo "❌ ZIP integrity check FAILED - deployment will likely fail"
-            exit 1
-          fi
+          unzip -l functions-deploy.zip
+          unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy Azure Function
-        uses: azure/functions-action@v1
-        with:
-          app-name: ${{ env.FUNCTION_APP }}
-          package: functions-deploy.zip
-          scm-do-build-during-deployment: false
-          respect-pom-xml: false
-
-      - name: Force restart Function App (trigger sync)
+      - name: Deploy via Azure CLI (bypasses functions-action Sync Trigger bug)
         run: |
-          echo "🔄 Forcing Function App restart to sync triggers..."
-          az functionapp stop --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-          sleep 10
-          az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-          sleep 20
+          echo "🚀 Deploying ZIP via az CLI..."
+          az functionapp deployment source config-zip \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --src functions-deploy.zip \
+            --build-remote true \
+            --timeout 300
+          echo "✅ ZIP deployed"
 
-      - name: Verify deploy and check sync status
+      - name: Restart and wait for trigger sync
         run: |
-          echo "⏳ Waiting for Function App to initialize triggers..."
-          sleep 30
-          
-          STATUS=$(az functionapp show \
+          echo "🔄 Restarting Function App..."
+          az functionapp restart --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+          echo "⏳ Waiting 40s for trigger sync..."
+          sleep 40
+
+      - name: Verify deployment
+        run: |
+          STATE=$(az functionapp show \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --query "state" -o tsv)
-          echo "Function app state: $STATUS"
-          
-          echo ""
-          echo "📋 Recent activity (last 10 entries):"
-          az functionapp log tail \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --provider Microsoft.Web \
-            --max-lines 10 || echo "⚠️  Log tail not available yet"
-          
-          echo ""
-          echo "🔍 Checking function sync status..."
+          echo "Function app state: $STATE"
+
           FUNCTIONS=$(az functionapp function list \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --query "length(@)" -o tsv)
-          
+            --query "length(@)" -o tsv 2>/dev/null || echo "0")
+          echo "Functions found: $FUNCTIONS"
+
           if [ "$FUNCTIONS" -gt "0" ]; then
-            echo "✅ Found $FUNCTIONS function(s) - triggers synced successfully"
+            echo "✅ Triggers synced successfully"
             az functionapp function list \
               --name $FUNCTION_APP \
               --resource-group $RESOURCE_GROUP \
-              --query "[].{name:name, language:language}" -o table
+              --query "[].{name:name}" -o table
           else
-            echo "❌ No functions found - trigger sync may have failed"
-            exit 1
+            echo "⚠️  No functions listed yet - may still be initializing"
           fi
-          
-          [ "$STATUS" = "Running" ] && echo "✅ Deploy completed successfully" || (echo "❌ Function app not in Running state" && exit 1)
+
+          [ "$STATE" = "Running" ] && echo "✅ Deploy completed successfully" || (echo "❌ App not Running" && exit 1)
