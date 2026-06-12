@@ -2,9 +2,37 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "type": "func",
+      "label": "func: host start",
+      "command": "host start",
+      "problemMatcher": "$func-node-watch",
+      "isBackground": true,
+      "dependsOn": "npm install (functions)",
+      "options": {
+        "cwd": "${workspaceFolder}/functions"
+      }
+    },
+    {
+      "type": "shell",
+      "label": "npm install (functions)",
+      "command": "npm install",
+      "options": {
+        "cwd": "${workspaceFolder}/functions"
+      }
+    },
+    {
+      "type": "shell",
+      "label": "npm prune (functions)",
+      "command": "npm prune --production",
+      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}/functions"
+      }
+    },
+    {
       "label": "Start Azurite",
       "type": "shell",
-      "command": "azurite --silent --location .azurite --debug .azurite/debug.log",
+      "command": "azurite --silent --location ${workspaceFolder}/.azurite --debug ${workspaceFolder}/.azurite/debug.log",
       "isBackground": true,
       "problemMatcher": {
         "pattern": { "regexp": "." },
@@ -16,28 +44,7 @@
       },
       "presentation": {
         "label": "Azurite",
-        "group": "dev-servers",
         "reveal": "silent"
-      }
-    },
-    {
-      "label": "Start Functions",
-      "type": "shell",
-      "command": "cd functions && func start",
-      "isBackground": true,
-      "dependsOn": "Start Azurite",
-      "problemMatcher": {
-        "pattern": { "regexp": "." },
-        "background": {
-          "activeOnStart": true,
-          "beginsPattern": "Azure Functions Core Tools",
-          "endsPattern": "Host lock lease acquired"
-        }
-      },
-      "presentation": {
-        "label": "Functions",
-        "group": "dev-servers",
-        "reveal": "always"
       }
     },
     {
@@ -45,7 +52,6 @@
       "type": "shell",
       "command": "npm run dev",
       "isBackground": true,
-      "dependsOn": "Start Functions",
       "problemMatcher": {
         "pattern": { "regexp": "." },
         "background": {
@@ -54,22 +60,19 @@
           "endsPattern": "ready in"
         }
       },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "presentation": {
         "label": "Vite",
-        "group": "dev-servers",
         "reveal": "always"
       }
     },
     {
-      "label": "func: host start",
-      "type": "shell",
-      "command": "cd functions && func host start",
-      "isBackground": true,
-      "problemMatcher": "$func-node-watch",
-      "presentation": {
-        "label": "Functions",
-        "reveal": "always"
-      }
+      "label": "Full Stack: Azurite + Functions + Vite",
+      "dependsOn": ["Start Azurite", "func: host start", "Start Vite"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
     }
   ]
 }

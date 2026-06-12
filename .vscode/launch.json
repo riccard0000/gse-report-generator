@@ -14,13 +14,9 @@
       "type": "node",
       "request": "attach",
       "port": 9229,
-      "preLaunchTask": "Start Vite",
+      "preLaunchTask": "Full Stack: Azurite + Functions + Vite",
       "restart": true,
-      "sourceMaps": true,
-      "presentation": {
-        "group": "fullstack",
-        "order": 1
-      }
+      "sourceMaps": true
     }
   ]
 }
