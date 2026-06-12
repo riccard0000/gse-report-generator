@@ -1,8 +1,3 @@
-# Pipeline Azure — Frontend (Static Web App) + Backend (Azure Functions)
-#
-# BRANCH: questa pipeline gira SOLO su feature/azure-deploy e azure/**
-# Il branch main e le sue pipeline Cloudflare restano invariati
-
 name: Deploy to Azure
 
 on:
@@ -17,7 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  # ── BUILD ──────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +34,6 @@ jobs:
           path: dist/
           retention-days: 1
 
-  # ── DEPLOY FRONTEND → Azure Static Web Apps ────────────────────
   deploy-frontend:
     runs-on: ubuntu-latest
     needs: build
@@ -61,7 +54,6 @@ jobs:
           output_location: ''
           skip_app_build: true
 
-  # ── SMOKE TEST ────────────────────────────────────────────────────
   smoke-test:
     runs-on: ubuntu-latest
     needs: deploy-frontend
@@ -70,13 +62,12 @@ jobs:
     steps:
       - name: Wait for CDN propagation
         run: sleep 20
-      - name: Smoke test — index.html risponde 200
+      - name: Smoke test
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$SITE_URL")
           echo "HTTP status: $STATUS"
           [ "$STATUS" = "200" ] && echo "OK" || (echo "FAIL" && exit 1)
 
-  # ── DEPLOY BACKEND → Azure Functions (Linux Consumption) ────────
   deploy-backend:
     runs-on: ubuntu-latest
     needs: smoke-test
@@ -99,24 +90,16 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install function dependencies (production only)
+      - name: Install function dependencies
         working-directory: functions
         run: npm install --omit=dev
 
-      - name: Package functions zip
-        run: |
-          cd functions
-          zip -r ../functions.zip . \
-            --exclude "*.git*" \
-            --exclude "local.settings.json"
-          echo "Zip size: $(du -sh functions.zip | cut -f1)"
-
-      - name: Remove WEBSITE_RUN_FROM_PACKAGE (abilita filesystem scrivibile per Kudu)
+      - name: Remove WEBSITE_RUN_FROM_PACKAGE
         run: |
           az functionapp config appsettings delete \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --setting-names WEBSITE_RUN_FROM_PACKAGE || true
+            --setting-names WEBSITE_RUN_FROM_PACKAGE 2>/dev/null || true
 
       - name: Update app settings
         run: |
@@ -132,10 +115,19 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Deploy via Kudu ZIP deploy
+      - name: Deploy Azure Function
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP }}
+          package: functions
+          respect-funcignore: true
+
+      - name: Verify deploy
         run: |
-          az functionapp deployment source config-zip \
+          sleep 30
+          STATUS=$(az functionapp show \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --src functions.zip
-          echo "✅ Deploy completato"
+            --query "state" -o tsv)
+          echo "Function app state: $STATUS"
+          [ "$STATUS" = "Running" ] && echo "✅ Deploy completato" || (echo "FAIL" && exit 1)

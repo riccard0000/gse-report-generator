@@ -29,26 +29,16 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install function dependencies (production only)
+      - name: Install function dependencies
         working-directory: functions
         run: npm install --omit=dev
-
-      - name: Package functions zip
-        run: |
-          cd functions
-          zip -r ../functions.zip . \
-            --exclude "*.git*" \
-            --exclude "local.settings.json"
-          echo "Zip size: $(du -sh functions.zip | cut -f1)"
-          echo "Zip contents:"
-          unzip -l functions.zip
 
       - name: Remove WEBSITE_RUN_FROM_PACKAGE
         run: |
           az functionapp config appsettings delete \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --setting-names WEBSITE_RUN_FROM_PACKAGE || true
+            --setting-names WEBSITE_RUN_FROM_PACKAGE 2>/dev/null || true
 
       - name: Update app settings
         run: |
@@ -64,26 +54,19 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Deploy via Kudu ZIP deploy (debug mode)
+      - name: Deploy Azure Function
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP }}
+          package: functions
+          respect-funcignore: true
+
+      - name: Verify deploy
         run: |
-          az functionapp deployment source config-zip \
+          sleep 30
+          STATUS=$(az functionapp show \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
-            --src functions.zip \
-            --debug 2>&1 || true
-          echo "--- tentativo con az rest diretto ---"
-          KUDU_URL=$(az functionapp show \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --query "defaultHostName" -o tsv | sed 's/\.azurewebsites\.net/.scm.azurewebsites.net/')
-          echo "Kudu URL: $KUDU_URL"
-          TOKEN=$(az account get-access-token --resource https://management.azure.com --query accessToken -o tsv)
-          HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/zip" \
-            --data-binary @functions.zip \
-            "https://$KUDU_URL/api/zipdeploy?isAsync=false")
-          echo "HTTP status: $HTTP_STATUS"
-          cat /tmp/kudu_response.txt
-          [ "$HTTP_STATUS" = "200" ] && echo "✅ Deploy completato" || exit 1
+            --query "state" -o tsv)
+          echo "Function app state: $STATUS"
+          [ "$STATUS" = "Running" ] && echo "✅ Deploy completato" || (echo "FAIL" && exit 1)
