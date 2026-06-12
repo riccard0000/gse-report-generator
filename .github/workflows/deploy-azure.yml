@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
@@ -83,7 +83,6 @@ jobs:
     env:
       RESOURCE_GROUP: rg-gse-report
       FUNCTION_APP: gse-proxy
-      CONTAINER: function-releases
 
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +97,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install function dependencies (production only)
         working-directory: functions
@@ -110,46 +109,15 @@ jobs:
           zip -r ../functions.zip . \
             --exclude "*.git*" \
             --exclude "local.settings.json"
-          cd ..
           echo "Zip size: $(du -sh functions.zip | cut -f1)"
 
-      - name: Create blob container if not exists
-        run: |
-          az storage container create \
-            --name $CONTAINER \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" || true
-
-      - name: Upload zip to blob storage
-        run: |
-          BLOB_NAME="functions-$(date +%Y%m%d%H%M%S)-${{ github.sha }}.zip"
-          echo "BLOB_NAME=$BLOB_NAME" >> $GITHUB_ENV
-          az storage blob upload \
-            --container-name $CONTAINER \
-            --name $BLOB_NAME \
-            --file functions.zip \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
-            --overwrite
-
-      - name: Generate SAS URL
-        run: |
-          EXPIRY=$(date -u -d "+1 year" +%Y-%m-%dT%H:%MZ)
-          SAS=$(az storage blob generate-sas \
-            --container-name $CONTAINER \
-            --name $BLOB_NAME \
-            --permissions r \
-            --expiry $EXPIRY \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
-            -o tsv)
-          ACCOUNT=$(echo "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" | grep -oP '(?<=AccountName=)[^;]+')
-          echo "BLOB_URL=https://${ACCOUNT}.blob.core.windows.net/${CONTAINER}/${BLOB_NAME}?${SAS}" >> $GITHUB_ENV
-
-      - name: Set app settings + WEBSITE_RUN_FROM_PACKAGE
+      - name: Update app settings
         run: |
           az functionapp config appsettings set \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --settings \
-              WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
+              FUNCTIONS_WORKER_RUNTIME="node" \
               OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
               AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
@@ -157,14 +125,10 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Restart and sync triggers
+      - name: Deploy via Kudu ZIP deploy
         run: |
-          az functionapp restart \
+          az functionapp deployment source config-zip \
             --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP
-          echo "Waiting for cold start (60s)..."
-          sleep 60
-          az rest \
-            --method post \
-            --url "https://management.azure.com/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Web/sites/$FUNCTION_APP/syncfunctiontriggers?api-version=2022-03-01"
+            --resource-group $RESOURCE_GROUP \
+            --src functions.zip
           echo "✅ Deploy completato"
