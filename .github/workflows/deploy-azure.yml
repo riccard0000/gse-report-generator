@@ -130,19 +130,20 @@ jobs:
       - name: Create functions deployment package
         run: |
           cd functions
-          # Include node_modules in zip for Consumption plan stability
+          # Exclude node_modules - let Azure build it on Linux server for proper native module compilation
           zip -r ../functions-deploy.zip . \
             -x "*.test.js" \
             ".env*" \
             "local.settings.json*" \
             ".git*" \
             "README.md" \
-            "*.md"
+            "*.md" \
+            "node_modules/*"
           cd ..
           echo "Package created successfully"
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           echo "ZIP contents verification:"
-          unzip -l functions-deploy.zip | head -30
+          unzip -l functions-deploy.zip | head -20
 
       - name: Deploy Azure Function
         uses: azure/functions-action@v1
