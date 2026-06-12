@@ -1,0 +1,15 @@
+{
+  "name": "gse-proxy-azure",
+  "version": "1.0.0",
+  "description": "Azure Function proxy per GSE Report Generator",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "func start",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.2.0",
+    "@azure/storage-blob": "^12.24.0"
+  }
+}
