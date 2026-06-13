@@ -145,24 +145,21 @@ jobs:
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy via Kudu zipdeploy (synchronous, no polling hang)
+      - name: Deploy via Kudu zipdeploy (OIDC Bearer token)
         timeout-minutes: 10
         run: |
-          echo "🚀 Deploying via Kudu REST API..."
+          echo "🚀 Deploying via Kudu REST API (Bearer token)..."
 
-          CREDS=$(az functionapp deployment list-publishing-credentials \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --query "{user:publishingUserName, pass:publishingPassword}" \
-            -o json)
-          KUDU_USER=$(echo $CREDS | jq -r '.user')
-          KUDU_PASS=$(echo $CREDS | jq -r '.pass')
+          # Ottieni il Bearer token dalla sessione OIDC già autenticata — niente credenziali publishing
+          TOKEN=$(az account get-access-token \
+            --resource "https://management.azure.com/" \
+            --query accessToken -o tsv)
+
           SCM_URL="https://${FUNCTION_APP}.scm.azurewebsites.net"
 
-          # Use synchronous zipdeploy (no isAsync) - waits for completion, no 202 polling hang
           HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
             -X POST \
-            -u "$KUDU_USER:$KUDU_PASS" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/zip" \
             -H "Cache-Control: no-cache" \
             --data-binary @functions-deploy.zip \
