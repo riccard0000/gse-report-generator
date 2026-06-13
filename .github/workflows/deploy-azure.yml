@@ -39,7 +39,7 @@ jobs:
       - name: Build frontend
         run: npm run build
         env:
-          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL_PROD }}
+          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL_AZURE }}
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
