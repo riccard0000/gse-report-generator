@@ -148,36 +148,31 @@ jobs:
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Deploy via Kudu zipdeploy (OIDC Bearer token)
-        timeout-minutes: 10
+      - name: Wait for any pending deployment to clear (avoids 409 conflict)
         run: |
-          echo "🚀 Deploying via Kudu REST API (Bearer token)..."
+          echo "⏳ Checking for active deployments..."
+          for i in $(seq 1 12); do
+            ACTIVE=$(az functionapp deployment list \
+              --name $FUNCTION_APP \
+              --resource-group $RESOURCE_GROUP \
+              --query "[?active==\`true\`] | length(@)" -o tsv 2>/dev/null || echo "0")
+            echo "Attempt $i/12 — active deployments: $ACTIVE"
+            [ "$ACTIVE" = "0" ] && echo "✅ No active deployments, proceeding" && break
+            [ "$i" = "12" ] && echo "⚠️ Timeout waiting for deployments, proceeding anyway"
+            sleep 15
+          done
 
-          # Ottieni il Bearer token dalla sessione OIDC già autenticata — niente credenziali publishing
-          TOKEN=$(az account get-access-token \
-            --resource "https://management.azure.com/" \
-            --query accessToken -o tsv)
-
-          SCM_URL="https://${FUNCTION_APP}.scm.azurewebsites.net"
-
-          HTTP_STATUS=$(curl -s -o /tmp/kudu_response.txt -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/zip" \
-            -H "Cache-Control: no-cache" \
-            --data-binary @functions-deploy.zip \
-            --max-time 540 \
-            "$SCM_URL/api/zipdeploy")
-
-          echo "Kudu deploy status: $HTTP_STATUS"
-          cat /tmp/kudu_response.txt || true
-
-          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "204" ]; then
-            echo "✅ Deploy completed"
-          else
-            echo "❌ Kudu deploy failed with HTTP $HTTP_STATUS"
-            exit 1
-          fi
+      - name: Deploy via Azure CLI (handles cold start, retry and timeout natively)
+        timeout-minutes: 15
+        run: |
+          echo "🚀 Deploying via az functionapp deploy..."
+          az functionapp deploy \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --src-path functions-deploy.zip \
+            --type zip \
+            --async false
+          echo "✅ Deploy completed"
 
       - name: Restart and wait for trigger sync
         run: |
