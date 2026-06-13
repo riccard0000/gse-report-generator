@@ -148,19 +148,15 @@ jobs:
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "✅ ZIP valid" || (echo "❌ ZIP corrupt" && exit 1)
 
-      - name: Wait for any pending deployment to clear (avoids 409 conflict)
+      - name: Reset stuck deployment lock (fix 409)
         run: |
-          echo "⏳ Checking for active deployments..."
-          for i in $(seq 1 12); do
-            ACTIVE=$(az functionapp deployment list \
-              --name $FUNCTION_APP \
-              --resource-group $RESOURCE_GROUP \
-              --query "[?active==\`true\`] | length(@)" -o tsv 2>/dev/null || echo "0")
-            echo "Attempt $i/12 — active deployments: $ACTIVE"
-            [ "$ACTIVE" = "0" ] && echo "✅ No active deployments, proceeding" && break
-            [ "$i" = "12" ] && echo "⚠️ Timeout waiting for deployments, proceeding anyway"
-            sleep 15
-          done
+          echo "🔓 Resetting deployment lock if stuck..."
+          SUB_ID=$(az account show --query id -o tsv)
+          az rest \
+            --method DELETE \
+            --uri "https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP}/deployments/latest?api-version=2022-03-01" \
+            2>/dev/null && echo "✅ Lock cleared" || echo "ℹ️  No lock to clear (normal)"
+          sleep 5
 
       - name: Deploy via Azure CLI (handles cold start, retry and timeout natively)
         timeout-minutes: 15
