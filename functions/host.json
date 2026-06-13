@@ -1,5 +1,16 @@
 {
   "version": "2.0",
+  "extensions": {
+    "http": {
+      "routePrefix": ""
+    }
+  },
+  "cors": {
+    "allowedOrigins": [
+      "https://kind-mud-0ff9d7203.7.azurestaticapps.net"
+    ],
+    "supportCredentials": false
+  },
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
