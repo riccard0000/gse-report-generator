@@ -1,6 +1,24 @@
+# Node / npm
 node_modules
-dist
+npm-debug.log*
+
+# Build output
+/dist
+/.swa
+
+# Env
 .env
-.env.local
-*.log
-functions/local.settings.json
+*.env.local
+
+# Azure Functions local
+/.azure-functions-tools
+/local.settings.json
+/__azurite_db_*.json
+/__blobstorage__
+
+# OS / editor
+.DS_Store
+.vscode/*.log
+
+# PDF di test locali (non committare output reali)
+*.pdf
