@@ -7,8 +7,10 @@ export const OPENROUTER_MODEL_EXTRACT   = 'nvidia/nemotron-3-super-120b-a12b:fre
 export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
 export const OPENROUTER_MODEL_FALLBACK  = 'google/gemma-4-31b-it:free';
 
-// Endpoint del proxy Cloudflare Worker
-export const OPENROUTER_ENDPOINT = import.meta.env.VITE_PROXY_URL as string;
+// Endpoint del proxy Azure Function (branch feature/azure-deploy)
+// In sviluppo locale: http://localhost:7071/api
+// In produzione: https://gse-proxy.azurewebsites.net
+export const OPENROUTER_ENDPOINT = import.meta.env.VITE_API_BASE_URL as string;
 
 // ─── PROMPT ESTRAZIONE ────────────────────────────────────────────────────
 /**
