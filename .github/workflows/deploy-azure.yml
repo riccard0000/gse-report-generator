@@ -39,7 +39,10 @@ jobs:
       - name: Build frontend
         run: npm run build
         env:
-          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
+          # Percorso relativo: SWA instrada /api/* → Function App collegata.
+          # In locale usa http://localhost:7071/api/proxy (vedi .env.example).
+          # Se in futuro si aggiunge APIM davanti, cambia solo questa riga.
+          VITE_API_BASE_URL: /api/proxy
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
