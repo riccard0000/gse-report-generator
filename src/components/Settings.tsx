@@ -98,10 +98,9 @@ export const Settings: React.FC = () => {
       const url  = WORKER_MODELS_URL();
       const res  = await fetch(url);
       const data = await res.json() as { data?: OpenRouterModel[] };
-      const free = (data.data ?? [])
-        .filter((m) => m.id.endsWith(':free'))
+      const all = (data.data ?? [])
         .sort((a, b) => a.id.localeCompare(b.id));
-      setModels(free);
+      setModels(all);
     } catch {
       setModelsError('Impossibile caricare i modelli da OpenRouter.');
     } finally {
