@@ -154,7 +154,7 @@ jobs:
           done
           echo "Demo PDFs uploaded successfully."
 
-      - name: Configure Function App settings
+      - name: Configure Function App settings (preliminare)
         run: |
           az functionapp config appsettings set \
             --name $FUNCTION_APP \
@@ -163,13 +163,7 @@ jobs:
               WEBSITE_RUN_FROM_PACKAGE="1" \
               AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               FUNCTIONS_WORKER_RUNTIME="node" \
-              FUNCTIONS_EXTENSION_VERSION="~4" \
-              OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
-              AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
-              STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
-              AZURE_STORAGE_TABLE_NAME="GseConfig" \
-              AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
-              FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+              FUNCTIONS_EXTENSION_VERSION="~4"
 
       - name: Install production dependencies (if cache miss)
         if: steps.npm-cache.outputs.cache-hit != 'true'
@@ -212,21 +206,38 @@ jobs:
             --async false
         timeout-minutes: 5
 
+      - name: Configure Function App settings (secrets, post-deploy)
+        run: |
+          az functionapp config appsettings set \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --settings \
+              OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+              AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+              STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
+              AZURE_STORAGE_TABLE_NAME="GseConfig" \
+              AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
+              FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+
       - name: Poll Function App until healthy
         run: |
           FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
           ORIGIN="${FRONTEND_URL:-https://kind-mud-0ff9d7203.7.azurestaticapps.net}"
-          echo "Waiting for Function App to respond 200 (max 120s)..."
+          FUNCTION_BASE="https://gse-proxy.azurewebsites.net/api/proxy"
+          echo "Waiting for Function App to respond (max 120s)..."
           for i in $(seq 1 24); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            S_CONFIG=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
               -H "Origin: ${ORIGIN}" \
-              "${FUNCTION_URL}" || echo "000")
-            echo "  [$i/24] /config → $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo "Function App healthy after $((i * 5))s"
+              "${FUNCTION_BASE}/config" || echo "000")
+            S_MODELS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              -H "Origin: ${ORIGIN}" \
+              "${FUNCTION_BASE}/models" || echo "000")
+            echo "  [$i/24] /config=$S_CONFIG  /models=$S_MODELS"
+            if [ "$S_CONFIG" = "200" ] && [ "$S_MODELS" = "200" ]; then
+              echo "Function App fully healthy after $((i * 5))s"
               exit 0
             fi
             sleep 5
           done
-          echo "Function App did not become healthy within 120s — check Kudu logs"
+          echo "Function App did not become healthy within 120s — check Azure portal"
           exit 1
