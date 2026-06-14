@@ -5,12 +5,6 @@
       "routePrefix": "api"
     }
   },
-  "cors": {
-    "allowedOrigins": [
-      "https://kind-mud-0ff9d7203.7.azurestaticapps.net"
-    ],
-    "supportCredentials": false
-  },
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
