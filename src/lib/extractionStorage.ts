@@ -1,6 +1,6 @@
 /**
  * extractionStorage.ts
- * Wrapper per le chiamate al Worker Cloudflare.
+ * Wrapper per le chiamate alla Azure Function proxy.
  *
  * Flusso in 3 step:
  *   Step 1 — dopo l'estrazione AI:
