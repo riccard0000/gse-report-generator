@@ -33,6 +33,13 @@ jobs:
         working-directory: functions
         run: npm install --omit=dev
 
+      - name: Strip bloat from node_modules
+        working-directory: functions
+        run: |
+          echo "Stripping source maps and .d.ts from node_modules..."
+          find node_modules -type f \( -name "*.js.map" -o -name "*.d.ts" \) -delete
+          echo "node_modules size: $(du -sh node_modules | cut -f1)"
+
       - name: Remove WEBSITE_RUN_FROM_PACKAGE
         run: |
           az functionapp config appsettings delete \

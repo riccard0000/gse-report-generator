@@ -159,7 +159,14 @@ jobs:
         run: |
           cd functions
           npm ci --omit=dev
-          echo "node_modules size: $(du -sh node_modules | cut -f1)"
+          echo "node_modules size (pre-strip): $(du -sh node_modules | cut -f1)"
+
+      - name: Strip bloat from node_modules
+        run: |
+          cd functions
+          echo "Removing source maps (.js.map) and TypeScript declarations (.d.ts) from node_modules..."
+          find node_modules -type f \( -name "*.js.map" -o -name "*.d.ts" \) -delete
+          echo "node_modules size (post-strip): $(du -sh node_modules | cut -f1)"
 
       - name: Create Functions package (con node_modules)
         run: |
@@ -190,7 +197,7 @@ jobs:
           sleep 5
 
       - name: Deploy via Azure CLI (async)
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           az functionapp deploy \
             --name $FUNCTION_APP \
