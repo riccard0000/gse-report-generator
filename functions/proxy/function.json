@@ -6,7 +6,7 @@
       "direction": "in",
       "name": "req",
       "route": "proxy/{*restOfPath}",
-      "methods": ["get", "post", "put", "delete", "options"]
+      "methods": ["get", "post", "put", "delete", "options", "head"]
     },
     {
       "type": "http",

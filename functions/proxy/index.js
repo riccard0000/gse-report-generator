@@ -205,6 +205,37 @@ module.exports = async function (context, req) {
     return;
   }
 
+  // ── HEAD /files/:key ───────────────────────────────────────────────────────
+  // Il browser manda HEAD per check esistenza file (es. diagnostica PDF demo).
+  // Rispondiamo solo con metadata, senza body (più veloce, senza download).
+  if (method === 'HEAD' && pathname.startsWith('/files/')) {
+    const key = decodeURIComponent(pathname.slice(7));
+    try {
+      const container  = getBlobContainerClient();
+      const blobClient = container.getBlockBlobClient(key);
+      const props      = await blobClient.getProperties();
+      const filename   = decodeURIComponent(key.split('/').pop() || 'documento.pdf');
+      context.res = {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type':        props.contentType || 'application/pdf',
+          'Content-Length':      String(props.contentLength),
+          'Content-Disposition': `inline; filename="${filename}"`,
+          'Cache-Control':       'private, max-age=3600',
+        },
+        body: '',
+      };
+    } catch (e) {
+      if (e.statusCode === 404) {
+        context.res = { status: 404, headers: corsHeaders, body: '' };
+      } else {
+        jsonResponse(context, { error: String(e) }, 500, corsHeaders);
+      }
+    }
+    return;
+  }
+
   // ── GET /files/:key ───────────────────────────────────────────────────────
   if (method === 'GET' && pathname.startsWith('/files/')) {
     const key = decodeURIComponent(pathname.slice(7));
