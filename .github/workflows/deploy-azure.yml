@@ -101,6 +101,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js (per npm ci)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
@@ -129,8 +134,6 @@ jobs:
             --resource-group $RESOURCE_GROUP \
             --settings \
               WEBSITE_RUN_FROM_PACKAGE="0" \
-              SCM_DO_BUILD_DURING_DEPLOYMENT="true" \
-              ENABLE_ORYX_BUILD="true" \
               AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               FUNCTIONS_WORKER_RUNTIME="node" \
               FUNCTIONS_EXTENSION_VERSION="~4" \
@@ -141,11 +144,16 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Create Functions package (code only, no node_modules)
+      - name: Install production dependencies
+        run: |
+          cd functions
+          npm ci --omit=dev
+          echo "node_modules size: $(du -sh node_modules | cut -f1)"
+
+      - name: Create Functions package (con node_modules)
         run: |
           cd functions
           zip -r ../functions-deploy.zip . \
-            -x "node_modules/*" \
             -x ".git*" \
             -x ".vscode/*" \
             -x "*.test.js" \
@@ -158,8 +166,8 @@ jobs:
           cd ..
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "ZIP valid" || (echo "ZIP corrupt" && exit 1)
-          echo "ZIP contents:"
-          unzip -l functions-deploy.zip
+          echo "ZIP top-level contents:"
+          unzip -l functions-deploy.zip | head -40
 
       - name: Reset stuck deployment lock (fix 409)
         run: |
@@ -180,11 +188,11 @@ jobs:
             --type zip \
             --async true
 
-      - name: Restart and wait for npm install + trigger sync
+      - name: Restart and wait for trigger sync
         run: |
           az functionapp restart --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-          echo "Waiting 90s for remote npm install and trigger sync..."
-          sleep 90
+          echo "Waiting 60s for trigger sync..."
+          sleep 60
 
       - name: Verify deployment
         run: |
