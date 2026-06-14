@@ -134,7 +134,13 @@ function metaFromRecord(record) {
 
 async function parseBody(req) {
   try {
-    if (req.body && typeof req.body === 'object') return req.body;
+    if (!req.body) return null;
+    if (Buffer.isBuffer(req.body)) {
+      const str = req.body.toString('utf8');
+      if (str.trim()) return JSON.parse(str);
+      return null;
+    }
+    if (typeof req.body === 'object') return req.body;
     if (typeof req.body === 'string' && req.body.trim()) return JSON.parse(req.body);
     return null;
   } catch { return null; }
