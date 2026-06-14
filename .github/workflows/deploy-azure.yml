@@ -208,6 +208,9 @@ jobs:
 
       - name: Configure Function App settings (secrets, post-deploy)
         run: |
+          if [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
+            echo "::warning::OPENROUTER_API_KEY non impostato nei GitHub Secrets! /models non funzionerà."
+          fi
           az functionapp config appsettings set \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
