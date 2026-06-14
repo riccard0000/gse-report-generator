@@ -34,7 +34,7 @@ export async function uploadPdf(historyId: string, file: File): Promise<string |
   const safeId = historyId.replace(/[^a-zA-Z0-9_:-]/g, '_');
   const key    = `files/${safeId}/${encodeURIComponent(file.name)}`;
   try {
-    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`, {
+    const res = await fetch(`${WORKER_URL}/files/${key}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/pdf' },
       body: file,
@@ -49,7 +49,7 @@ export async function uploadPdf(historyId: string, file: File): Promise<string |
 // ── Download PDF da KV come File ──────────────────────────────────────────────
 export async function downloadPdf(key: string, fileName: string): Promise<File | null> {
   try {
-    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`);
+    const res = await fetch(`${WORKER_URL}/files/${key}`);
     if (!res.ok) return null;
     const blob = await res.blob();
     return new File([blob], fileName, { type: 'application/pdf' });
