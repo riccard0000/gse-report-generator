@@ -1,0 +1,32 @@
+# FILE DISATTIVATO — backup pipeline Cloudflare originale
+# Rinominato con .bak per disattivarlo senza perderlo
+# Per riattivarlo rimuovi l'estensione .bak
+
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'worker/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
+      - uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: gse-report-generator
+          directory: dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

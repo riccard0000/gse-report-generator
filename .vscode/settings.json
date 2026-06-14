@@ -1,0 +1,15 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "ConvertFrom-Json": true,
+        "/^cd \"C:\\\\Users\\\\ricca\\\\OneDrive\\\\Documenti\\\\Visual Studio Code Projects\\\\gse report generator\\\\gse-report-generator\\\\functions\" ; node test-local\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    },
+    "azureFunctions.deploySubpath": "functions",
+    "azureFunctions.postDeployTask": "npm install (functions)",
+    "azureFunctions.projectLanguage": "JavaScript",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.preDeployTask": "npm prune (functions)"
+}

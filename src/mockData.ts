@@ -44,6 +44,7 @@
 
 import { ExtractedData, NarrativeData } from './types';
 import { computeDerivedFields } from './kpiCalculator';
+import { OPENROUTER_ENDPOINT } from './constants';
 
 // Nomi reali dei file nel repo (con spazi, come depositati)
 export const MOCK_FILE_NAMES = [
@@ -52,17 +53,24 @@ export const MOCK_FILE_NAMES = [
   'OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf',
 ];
 
-// Stessi nomi URL-encoded per le chiamate fetch/GitHub Pages
-const PDF_FILENAMES = [
-  'OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
-  'OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
-  'OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf',
-];
+// Chiavi in Azure Blob Storage (container gse-pdf-files, prefisso demo/)
+const DEMO_BLOB_KEYS = MOCK_FILE_NAMES.map((name) => `demo/${encodeURIComponent(name)}`);
 
+/**
+ * Restituisce gli URL per i PDF demo tramite il proxy API → Azure Blob Storage.
+ *
+ * I PDF sono caricati nel container gse-pdf-files con le chiavi:
+ *   demo/OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf
+ *   demo/OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf
+ *   demo/OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf
+ *
+ * Il proxy risponde su: GET /api/proxy/files/{key} → download da Azure Blob.
+ */
 export function getMockPdfUrls(): string[] {
-  const rawBase = import.meta.env.BASE_URL ?? '/';
-  const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
-  return PDF_FILENAMES.map((f) => `${base}${f}`);
+  const base = (OPENROUTER_ENDPOINT ?? '/api/proxy').replace(/\/$/, '');
+  // La chiave Blob è già URL-encoded nella parte filename (spazi → %20).
+  // Non ri-encodare: il proxy decodifica con decodeURIComponent lato server.
+  return DEMO_BLOB_KEYS.map((key) => `${base}/files/${key}`);
 }
 
 export const MOCK_EXTRACTED_DATA: ExtractedData = {

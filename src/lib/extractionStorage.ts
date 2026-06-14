@@ -1,6 +1,6 @@
 /**
  * extractionStorage.ts
- * Wrapper per le chiamate al Worker Cloudflare.
+ * Wrapper per le chiamate alla Azure Function proxy.
  *
  * Flusso in 3 step:
  *   Step 1 — dopo l'estrazione AI:
@@ -34,9 +34,9 @@ export async function uploadPdf(historyId: string, file: File): Promise<string |
   const safeId = historyId.replace(/[^a-zA-Z0-9_:-]/g, '_');
   const key    = `files/${safeId}/${encodeURIComponent(file.name)}`;
   try {
-    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`, {
+    const res = await fetch(`${WORKER_URL}/files/${key}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/pdf' },
+      headers: { 'Content-Type': 'application/octet-stream' },
       body: file,
     });
     if (!res.ok) return null;
@@ -49,7 +49,7 @@ export async function uploadPdf(historyId: string, file: File): Promise<string |
 // ── Download PDF da KV come File ──────────────────────────────────────────────
 export async function downloadPdf(key: string, fileName: string): Promise<File | null> {
   try {
-    const res = await fetch(`${WORKER_URL}/files/${encodeURIComponent(key)}`);
+    const res = await fetch(`${WORKER_URL}/files/${key}`);
     if (!res.ok) return null;
     const blob = await res.blob();
     return new File([blob], fileName, { type: 'application/pdf' });

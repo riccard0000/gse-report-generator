@@ -1,0 +1,12 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UKvz1lMQ==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;",
+    "STORAGE_ACCOUNT_NAME": "devstoreaccount1",
+    "AZURE_STORAGE_TABLE_NAME": "GseConfig",
+    "AZURE_STORAGE_CONTAINER_NAME": "gse-pdf-files",
+    "FRONTEND_URL": "http://localhost:5173"
+  }
+}

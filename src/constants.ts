@@ -3,12 +3,22 @@
  */
 
 // ─── Modelli OpenRouter (tutti :free) ─────────────────────────────────────
-export const OPENROUTER_MODEL_EXTRACT   = 'nvidia/nemotron-3-super-120b-a12b:free';
-export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
-export const OPENROUTER_MODEL_FALLBACK  = 'google/gemma-4-31b-it:free';
+export const OPENROUTER_MODEL_EXTRACT   = 'deepseek/deepseek-v4-pro';
+export const OPENROUTER_MODEL_NARRATIVE = 'deepseek/deepseek-v4-pro';
+export const OPENROUTER_MODEL_FALLBACK  = 'deepseek/deepseek-v4-flash';
 
-// Endpoint del proxy Cloudflare Worker
-export const OPENROUTER_ENDPOINT = import.meta.env.VITE_PROXY_URL as string;
+// Endpoint del proxy Azure Function
+//
+// ARCHITETTURA: Browser SPA → Static Web App /api/proxy/* → Azure Functions → OpenRouter/Blob
+//
+// Valori attesi per VITE_API_BASE_URL:
+//   Sviluppo locale:   http://localhost:7071/api/proxy
+//   Azure (produzione): /api/proxy   ← percorso relativo, Static Web App instrada /api → Function App
+//
+// APIM-ready: il prefisso /api/proxy è il contratto stabile verso il client.
+// Se in futuro si aggiunge Azure API Management, APIM espone /gse/proxy e instrada
+// verso la Function senza che il front-end debba cambiare nulla.
+export const OPENROUTER_ENDPOINT = import.meta.env.VITE_API_BASE_URL as string;
 
 // ─── PROMPT ESTRAZIONE ────────────────────────────────────────────────────
 /**

@@ -1,68 +1,17 @@
-name: Deploy to GitHub Pages
+# FILE DISATTIVATO SU QUESTO BRANCH
+# Il deploy.yml di main (GitHub Pages) viene sovrascritto da questo placeholder
+# per evitare che venga eseguito su feature/azure-deploy.
+# La pipeline Azure e' in deploy-azure.yml
+
+name: Deploy to GitHub Pages (disabled on azure branch)
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    branches:
+      - NEVER_RUN_THIS_BRANCH
 
 jobs:
-  build-and-deploy:
+  noop:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Copy demo PDFs to public/
-        run: |
-          mkdir -p public
-          cp OUT_LASTBIL_IC01637000892\ 2022\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf"
-          cp OUT_LASTBIL_IC01637000892\ 2023\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf"
-          cp OUT_LASTBIL_IC01637000892\ 2024\ GEOSOL.pdf "public/OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf"
-
-      - name: Build
-        env:
-          VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
-        run: npm run build
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-      - name: Deploy Worker to Cloudflare
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: worker
+      - run: echo "Pipeline GitHub Pages disabilitata su questo branch."

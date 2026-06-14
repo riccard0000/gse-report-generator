@@ -1,0 +1,246 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches:
+      - feature/azure-deploy
+      - azure/**
+  workflow_dispatch:
+    inputs:
+      backend_only:
+        description: 'Deploy solo il backend (salta build/frontend/smoke-test)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.backend_only != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: https://gse-proxy.azurewebsites.net/api/proxy
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 1
+
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ github.event.inputs.backend_only != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ github.token }}
+          action: 'upload'
+          app_location: 'dist'
+          output_location: ''
+          skip_app_build: true
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: deploy-frontend
+    if: ${{ github.event.inputs.backend_only != 'true' }}
+    env:
+      SITE_URL: ${{ secrets.AZURE_STATIC_WEB_APPS_URL }}
+    steps:
+      - name: Wait for CDN propagation
+        run: sleep 20
+
+      - name: Smoke test frontend
+        run: |
+          echo "Testing URL: '${SITE_URL}'"
+          if [ -z "${SITE_URL}" ]; then
+            echo "WARN: AZURE_STATIC_WEB_APPS_URL secret non impostato, skip smoke test frontend"
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "${SITE_URL}" || echo "000")
+          echo "HTTP status: $STATUS"
+          if [ "$STATUS" = "000" ]; then
+            echo "WARN: curl timeout o errore di rete - la SWA potrebbe ancora propagarsi"
+            exit 0
+          fi
+          [ "$STATUS" = "200" ] && echo "OK" || (echo "FAIL: unexpected status $STATUS" && exit 1)
+
+      - name: Smoke test backend (warning only)
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+            -H "Origin: ${SITE_URL:-https://kind-mud-0ff9d7203.7.azurestaticapps.net}" \
+            "https://gse-proxy.azurewebsites.net/api/proxy/config" || echo "000")
+          echo "Backend /config status: $STATUS"
+          [ "$STATUS" = "200" ] && echo "OK" || echo "WARN: backend status $STATUS (non bloccante)"
+
+  deploy-backend:
+    runs-on: ubuntu-latest
+    needs: [smoke-test]
+    if: ${{ always() && (needs.smoke-test.result == 'success' || github.event.inputs.backend_only == 'true') }}
+    env:
+      RESOURCE_GROUP: rg-gse-report
+      FUNCTION_APP: gse-proxy
+      FUNCTION_URL: https://gse-proxy.azurewebsites.net/api/proxy/config
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js (per npm ci)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        id: npm-cache
+        with:
+          path: functions/node_modules
+          key: func-npm-${{ runner.os }}-${{ hashFiles('functions/package-lock.json') }}
+          restore-keys: func-npm-${{ runner.os }}-
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload demo PDFs to Blob Storage
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        run: |
+          for f in \
+            "OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf" \
+            "OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf" \
+            "OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf"; do
+            echo "Uploading demo/$f..."
+            az storage blob upload \
+              --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
+              --container-name "gse-pdf-files" \
+              --name "demo/$f" \
+              --file "$f" \
+              --overwrite true \
+              --only-show-errors \
+              --output none
+            echo "  ✓ demo/$f"
+          done
+          echo "Demo PDFs uploaded successfully."
+
+      - name: Configure Function App settings (preliminare)
+        run: |
+          az functionapp config appsettings set \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --settings \
+              WEBSITE_RUN_FROM_PACKAGE="1" \
+              AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+              FUNCTIONS_WORKER_RUNTIME="node" \
+              FUNCTIONS_EXTENSION_VERSION="~4"
+
+      - name: Install production dependencies (if cache miss)
+        if: steps.npm-cache.outputs.cache-hit != 'true'
+        run: |
+          cd functions
+          npm ci --omit=dev
+          echo "node_modules size (pre-strip): $(du -sh node_modules | cut -f1)"
+
+      - name: Strip bloat from node_modules
+        run: |
+          cd functions
+          echo "Removing source maps (.js.map) and TypeScript declarations (.d.ts) from node_modules..."
+          find node_modules -type f \( -name "*.js.map" -o -name "*.d.ts" \) -delete
+          echo "node_modules size (post-strip): $(du -sh node_modules | cut -f1)"
+
+      - name: Create Functions package
+        run: |
+          cd functions
+          zip -r ../functions-deploy.zip . \
+            -x ".git*" \
+            -x ".vscode/*" \
+            -x "*.test.js" \
+            -x "test-local.js" \
+            -x ".env*" \
+            -x "local.settings.json" \
+            -x "local.settings.json.example" \
+            -x ".DS_Store" \
+            -x "npm-debug.log*"
+          cd ..
+          echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
+          unzip -t functions-deploy.zip > /dev/null && echo "ZIP valid" || (echo "ZIP corrupt" && exit 1)
+
+      - name: Deploy zip (sync, no restart needed with Run-From-Package)
+        run: |
+          az functionapp deploy \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --src-path functions-deploy.zip \
+            --type zip \
+            --async false
+        timeout-minutes: 5
+
+      - name: Configure Function App settings (secrets, post-deploy)
+        run: |
+          if [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
+            echo "::warning::OPENROUTER_API_KEY non impostato nei GitHub Secrets! /models non funzionerà."
+          fi
+          az functionapp config appsettings set \
+            --name $FUNCTION_APP \
+            --resource-group $RESOURCE_GROUP \
+            --settings \
+              OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}" \
+              AZURE_STORAGE_CONNECTION_STRING="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+              STORAGE_ACCOUNT_NAME="${{ secrets.STORAGE_ACCOUNT_NAME }}" \
+              AZURE_STORAGE_TABLE_NAME="GseConfig" \
+              AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
+              FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+
+      - name: Poll Function App until healthy
+        run: |
+          FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
+          ORIGIN="${FRONTEND_URL:-https://kind-mud-0ff9d7203.7.azurestaticapps.net}"
+          FUNCTION_BASE="https://gse-proxy.azurewebsites.net/api/proxy"
+          echo "Waiting for Function App to respond (max 120s)..."
+          for i in $(seq 1 24); do
+            S_CONFIG=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              -H "Origin: ${ORIGIN}" \
+              "${FUNCTION_BASE}/config" || echo "000")
+            S_MODELS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              -H "Origin: ${ORIGIN}" \
+              "${FUNCTION_BASE}/models" || echo "000")
+            echo "  [$i/24] /config=$S_CONFIG  /models=$S_MODELS"
+            if [ "$S_CONFIG" = "200" ] && [ "$S_MODELS" = "200" ]; then
+              echo "Function App fully healthy after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Function App did not become healthy within 120s — check Azure portal"
+          exit 1

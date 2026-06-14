@@ -13,9 +13,11 @@ const NARRATIVE_CONTRACT_PREVIEW = `Sei un funzionario GSE esperto in istruttori
 
 interface OpenRouterModel { id: string; name: string; }
 
+import { OPENROUTER_ENDPOINT } from '../constants';
+
 const WORKER_MODELS_URL = () => {
-  const base = import.meta.env.VITE_PROXY_URL ?? '';
-  return base.replace(/\/$/, '') + '/models';
+  const base = (OPENROUTER_ENDPOINT ?? '/api/proxy').replace(/\/$/, '') + '/models';
+  return base;
 };
 
 /** Sezione contrattuale read-only con collapse */
@@ -96,10 +98,9 @@ export const Settings: React.FC = () => {
       const url  = WORKER_MODELS_URL();
       const res  = await fetch(url);
       const data = await res.json() as { data?: OpenRouterModel[] };
-      const free = (data.data ?? [])
-        .filter((m) => m.id.endsWith(':free'))
+      const all = (data.data ?? [])
         .sort((a, b) => a.id.localeCompare(b.id));
-      setModels(free);
+      setModels(all);
     } catch {
       setModelsError('Impossibile caricare i modelli da OpenRouter.');
     } finally {
@@ -254,7 +255,7 @@ export const Settings: React.FC = () => {
 
           {/* ─── Salva ─── */}
           <div className="flex items-center justify-between mt-8 pt-5 border-t border-slate-100">
-            <p className="text-xs text-slate-400">Le impostazioni vengono salvate sul server (KV Cloudflare) e persistono tra le sessioni.</p>
+            <p className="text-xs text-slate-400">Le impostazioni vengono salvate su Azure Table Storage e persistono tra le sessioni.</p>
             <button
               onClick={saveConfig}
               disabled={saving}

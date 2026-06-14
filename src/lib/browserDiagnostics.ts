@@ -53,33 +53,21 @@ const PAGES_ORIGIN =
     ? window.location.origin
     : 'https://riccard0000.github.io';
 
-const PROXY_URL = 'https://gse-proxy.riccardoooo.workers.dev';
+import { OPENROUTER_ENDPOINT } from '../constants';
+import { getMockPdfUrls } from '../mockData';
+
+const PROXY_URL = (OPENROUTER_ENDPOINT ?? '/api/proxy').replace(/\/$/, '');
 const PDF_WORKER_URL =
   'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 
 /**
- * Nomi PDF con encoding %20 — devono corrispondere ESATTAMENTE ai file
- * presenti nella root del repo (e quindi serviti da GitHub Pages):
- *   OUT_LASTBIL_IC01637000892 2022 GEOSOL.pdf
- *   OUT_LASTBIL_IC01637000892 2023 GEOSOL.pdf
- *   OUT_LASTBIL_IC01637000892 2024 GEOSOL.pdf
+ * URL PDF demo serviti dall'API proxy → Azure Blob Storage.
+ * getMockPdfUrls() restituisce URL tipo /api/proxy/files/demo/...
  */
 const PDF_FILES = [
-  {
-    id: 'pdf-2022',
-    label: 'PDF GEOSOL 2022',
-    name: 'OUT_LASTBIL_IC01637000892%202022%20GEOSOL.pdf',
-  },
-  {
-    id: 'pdf-2023',
-    label: 'PDF GEOSOL 2023',
-    name: 'OUT_LASTBIL_IC01637000892%202023%20GEOSOL.pdf',
-  },
-  {
-    id: 'pdf-2024',
-    label: 'PDF GEOSOL 2024',
-    name: 'OUT_LASTBIL_IC01637000892%202024%20GEOSOL.pdf',
-  },
+  { id: 'pdf-2022', label: 'PDF GEOSOL 2022', url: getMockPdfUrls()[0] },
+  { id: 'pdf-2023', label: 'PDF GEOSOL 2023', url: getMockPdfUrls()[1] },
+  { id: 'pdf-2024', label: 'PDF GEOSOL 2024', url: getMockPdfUrls()[2] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -196,11 +184,8 @@ async function checkProxyCors(): Promise<DiagnosticCheck> {
 // ---------------------------------------------------------------------------
 // Check 5-7 — PDF GEOSOL (HEAD → fallback GET parziale)
 // ---------------------------------------------------------------------------
-async function checkPdf(id: string, label: string, fileName: string): Promise<DiagnosticCheck> {
-  // L'URL è costruito con APP_BASE che viene da import.meta.env.BASE_URL:
-  //   produzione → "https://riccard0000.github.io/gse-report-generator/OUT_LASTBIL_…pdf"
-  //   locale dev  → "http://localhost:5173/OUT_LASTBIL_…pdf"
-  const url = `${PAGES_ORIGIN}${APP_BASE}${fileName}`;
+async function checkPdf(id: string, label: string, url: string): Promise<DiagnosticCheck> {
+  // URL fornito da getMockPdfUrls() → /api/proxy/files/demo/...
   try {
     const { res, durationMs } = await timedFetch(url, { method: 'HEAD', mode: 'cors' });
     if (res.ok || res.status === 200) {
@@ -329,7 +314,7 @@ export async function runBrowserDiagnostics(): Promise<DiagnosticRun> {
     checkPdfWorker(),
     checkProxyConfig(),
     checkProxyCors(),
-    ...PDF_FILES.map((f) => checkPdf(f.id, f.label, f.name)),
+    ...PDF_FILES.map((f) => checkPdf(f.id, f.label, f.url)),
   ]);
 
   const matcherCheck = await checkMatcherKindConsistency();

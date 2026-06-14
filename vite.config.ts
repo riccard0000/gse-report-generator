@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const REPO_NAME = 'gse-report-generator';
-
+// base '/' per Azure Static Web Apps
+// (era '/gse-report-generator/' per GitHub Pages — vedere branch main)
 export default defineConfig({
   plugins: [react()],
-  base: `/${REPO_NAME}/`,
+  base: '/',
   build: {
     outDir: 'dist',
     sourcemap: false,

@@ -1,0 +1,12 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AZURE_STORAGE_CONNECTION_STRING": "<connection-string-locale-o-azurite>",
+    "AZURE_STORAGE_TABLE_NAME": "GseConfig",
+    "AZURE_STORAGE_CONTAINER_NAME": "gse-pdf-files",
+    "OPENROUTER_API_KEY": "<la-tua-chiave-openrouter>",
+    "FRONTEND_URL": "http://localhost:5173"
+  }
+}

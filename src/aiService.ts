@@ -132,9 +132,9 @@ const callModel = async (
   const proxyUrl = OPENROUTER_ENDPOINT;
   if (!proxyUrl) {
     throw new Error(
-      'VITE_PROXY_URL non configurata. ' +
-      'In locale: copia .env.example in .env e imposta VITE_PROXY_URL=http://localhost:8787. ' +
-      'In produzione: aggiungi VITE_PROXY_URL nei secret di GitHub Actions.'
+      'VITE_API_BASE_URL non configurata. ' +
+      'In locale: copia .env.example in .env e imposta VITE_API_BASE_URL=http://localhost:7071/api/proxy. ' +
+      'In produzione: la variabile è impostata nel workflow deploy-azure.yml.'
     );
   }
   onProgress?.(`Chiamata AI (${model.split('/').pop()})...`);
