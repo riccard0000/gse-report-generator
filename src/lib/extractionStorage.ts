@@ -36,7 +36,7 @@ export async function uploadPdf(historyId: string, file: File): Promise<string |
   try {
     const res = await fetch(`${WORKER_URL}/files/${key}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/pdf' },
+      headers: { 'Content-Type': 'application/octet-stream' },
       body: file,
     });
     if (!res.ok) return null;
