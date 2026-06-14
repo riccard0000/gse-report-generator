@@ -46,8 +46,8 @@ const PARTITION_KEY     = 'gse';
 
 const DEFAULT_MODELS = {
   models: {
-    extract:   { primary: 'nvidia/nemotron-3-super-120b-a12b:free', fallback: 'google/gemma-4-31b-it:free' },
-    narrative: { primary: 'nvidia/nemotron-3-super-120b-a12b:free', fallback: 'google/gemma-4-31b-it:free' },
+    extract:   { primary: 'deepseek/deepseek-v4-pro', fallback: 'deepseek/deepseek-v4-flash' },
+    narrative: { primary: 'deepseek/deepseek-v4-pro', fallback: 'deepseek/deepseek-v4-flash' },
   },
 };
 

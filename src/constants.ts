@@ -3,9 +3,9 @@
  */
 
 // ─── Modelli OpenRouter (tutti :free) ─────────────────────────────────────
-export const OPENROUTER_MODEL_EXTRACT   = 'nvidia/nemotron-3-super-120b-a12b:free';
-export const OPENROUTER_MODEL_NARRATIVE = 'nvidia/nemotron-3-super-120b-a12b:free';
-export const OPENROUTER_MODEL_FALLBACK  = 'google/gemma-4-31b-it:free';
+export const OPENROUTER_MODEL_EXTRACT   = 'deepseek/deepseek-v4-pro';
+export const OPENROUTER_MODEL_NARRATIVE = 'deepseek/deepseek-v4-pro';
+export const OPENROUTER_MODEL_FALLBACK  = 'deepseek/deepseek-v4-flash';
 
 // Endpoint del proxy Azure Function
 //
