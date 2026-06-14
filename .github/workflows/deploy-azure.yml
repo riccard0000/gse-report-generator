@@ -108,6 +108,7 @@ jobs:
     env:
       RESOURCE_GROUP: rg-gse-report
       FUNCTION_APP: gse-proxy
+      FUNCTION_URL: https://gse-proxy.azurewebsites.net/api/proxy/config
 
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +118,14 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        id: npm-cache
+        with:
+          path: functions/node_modules
+          key: func-npm-${{ runner.os }}-${{ hashFiles('functions/package-lock.json') }}
+          restore-keys: func-npm-${{ runner.os }}-
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
@@ -124,27 +133,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Pre-deployment health check
-        run: |
-          echo "Checking Function App state..."
-          STATE=$(az functionapp show \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --query "state" -o tsv)
-          echo "Current state: $STATE"
-          if [ "$STATE" = "Stopped" ]; then
-            echo "Starting stopped Function App..."
-            az functionapp start --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-            sleep 15
-          fi
-
       - name: Configure Function App settings
         run: |
           az functionapp config appsettings set \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --settings \
-              WEBSITE_RUN_FROM_PACKAGE="0" \
+              WEBSITE_RUN_FROM_PACKAGE="1" \
               AzureWebJobsStorage="${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
               FUNCTIONS_WORKER_RUNTIME="node" \
               FUNCTIONS_EXTENSION_VERSION="~4" \
@@ -155,7 +150,8 @@ jobs:
               AZURE_STORAGE_CONTAINER_NAME="gse-pdf-files" \
               FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
 
-      - name: Install production dependencies
+      - name: Install production dependencies (if cache miss)
+        if: steps.npm-cache.outputs.cache-hit != 'true'
         run: |
           cd functions
           npm ci --omit=dev
@@ -168,7 +164,7 @@ jobs:
           find node_modules -type f \( -name "*.js.map" -o -name "*.d.ts" \) -delete
           echo "node_modules size (post-strip): $(du -sh node_modules | cut -f1)"
 
-      - name: Create Functions package (con node_modules)
+      - name: Create Functions package
         run: |
           cd functions
           zip -r ../functions-deploy.zip . \
@@ -184,70 +180,32 @@ jobs:
           cd ..
           echo "ZIP size: $(du -sh functions-deploy.zip | cut -f1)"
           unzip -t functions-deploy.zip > /dev/null && echo "ZIP valid" || (echo "ZIP corrupt" && exit 1)
-          echo "ZIP top-level contents:"
-          unzip -l functions-deploy.zip | head -40
 
-      - name: Reset stuck deployment lock (fix 409)
-        run: |
-          SUB_ID=$(az account show --query id -o tsv)
-          az rest \
-            --method DELETE \
-            --uri "https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP}/deployments/latest?api-version=2022-03-01" \
-            2>/dev/null && echo "Lock cleared" || echo "No lock to clear (normal)"
-          sleep 5
-
-      - name: Deploy via Azure CLI (async)
-        timeout-minutes: 10
+      - name: Deploy zip (sync, no restart needed with Run-From-Package)
         run: |
           az functionapp deploy \
             --name $FUNCTION_APP \
             --resource-group $RESOURCE_GROUP \
             --src-path functions-deploy.zip \
             --type zip \
-            --async true
+            --async false
+        timeout-minutes: 5
 
-      - name: Restart and wait for trigger sync
-        run: |
-          az functionapp restart --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-          echo "Waiting 60s for trigger sync..."
-          sleep 60
-
-      - name: Verify deployment
-        run: |
-          STATE=$(az functionapp show \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --query "state" -o tsv)
-          echo "Function app state: $STATE"
-
-          FUNCTIONS=$(az functionapp function list \
-            --name $FUNCTION_APP \
-            --resource-group $RESOURCE_GROUP \
-            --query "length(@)" -o tsv 2>/dev/null || echo "0")
-          echo "Functions found: $FUNCTIONS"
-
-          if [ "$FUNCTIONS" -gt "0" ]; then
-            az functionapp function list \
-              --name $FUNCTION_APP \
-              --resource-group $RESOURCE_GROUP \
-              --query "[].{name:name}" -o table
-          else
-            echo "No functions listed yet - may still be initializing"
-          fi
-
-          [ "$STATE" = "Running" ] && echo "Deploy completed successfully" || (echo "App not Running" && exit 1)
-
-      - name: Final smoke test backend
+      - name: Poll Function App until healthy
         run: |
           FRONTEND_URL="${{ secrets.AZURE_STATIC_WEB_APPS_URL }}"
           ORIGIN="${FRONTEND_URL:-https://kind-mud-0ff9d7203.7.azurestaticapps.net}"
-          for i in 1 2 3; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+          echo "Waiting for Function App to respond 200 (max 120s)..."
+          for i in $(seq 1 24); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
               -H "Origin: ${ORIGIN}" \
-              "https://gse-proxy.azurewebsites.net/api/proxy/config" || echo "000")
-            echo "Attempt $i — /config status: $STATUS"
-            [ "$STATUS" = "200" ] && echo "Backend OK" && exit 0
-            sleep 15
+              "${FUNCTION_URL}" || echo "000")
+            echo "  [$i/24] /config → $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Function App healthy after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
           done
-          echo "Backend did not respond 200 after 3 attempts — check Kudu logs"
+          echo "Function App did not become healthy within 120s — check Kudu logs"
           exit 1
